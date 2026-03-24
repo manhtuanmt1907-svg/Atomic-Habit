@@ -36,5 +36,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AtomicHabit-APK
+          name: Studygram-APK
           path: build/apk/*.apk
