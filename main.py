@@ -2,9 +2,11 @@ import flet as ft
 import database as db
 from datetime import datetime
 import random
+import flet_audio as fta
 import time
 import shutil
 import os
+
 import asyncio
 
 QUOTES_LIST = [
@@ -23,39 +25,50 @@ HUST_QUOTES = [
     "Bình tĩnh sống! Bug chưa fix thì đêm nay không ngủ. 🦉",
 ]
 
-BOT_PHRASES = {
-    "INCOME": ["Lúa về rồi ông ơi! 🤖", "Ông giáo lại cá kiếm à? Tuyệt! 😎"],
-    "EXPENSE": [
-        "Lại chi nữa à? Nhịn ăn sáng đi nhé! 😠",
-        "Tôi ghi xé sổ rồi. Cẩn thận ví mỏng! 🤖",
-    ],
-    "HABIT_PRAISE": [
-        "Quá đỉnh ông giáo! Cứ thế mà gõ code! 😎",
-        "Thói quen chuẩn đét! Cứ thế tiến lên! 😎",
-    ],
-    "MISSED_LOGS": [
-        "Hôm qua ông quên cái gì đấy? Dám lười à? 😠",
-        "Ông giáo có phải đang thả lỏng quá không? 😠",
-    ],
-}
+I_CHING_HEXAGRAMS = [
+    {
+        "name": "Truân (䷂)",
+        "symbol": "䷂",
+        "advice": "Quẻ Truân: Vạn sự khởi đầu nan. Code hôm nay có thể nhiều bug, hãy kiên nhẫn nháp ra giấy trước khi gõ.",
+    },
+    {
+        "name": "Thái (䷀)",
+        "symbol": "䷀",
+        "advice": "Quẻ Thái: Hanh thông đại lợi. Đây là ngày tốt để học kiến thức mới, mọi thứ sẽ suôn sẻ!",
+    },
+    {
+        "name": "Ký Tế (䷾)",
+        "symbol": "䷾",
+        "advice": "Quẻ Ký Tế: Hoàn thành tốt đẹp. Hãy tập trung hoàn thiện bài tập và review lại code cũ.",
+    },
+    {
+        "name": "Bĩ (䷁)",
+        "symbol": "䷁",
+        "advice": "Quẻ Bĩ: Bế tắc cần cẩn trọng. Đừng ép bản thân quá, hãy nghỉ ngơi rồi quay lại với đầu óc tỉnh táo.",
+    },
+    {
+        "name": "Phục (䷇)",
+        "symbol": "䷇",
+        "advice": "Quẻ Phục: Bắt đầu lại tuyệt vời. Ngày phù hợp để reset thói quen và lên kế hoạch mới.",
+    },
+]
 
 
 class FocusManager:
-    def __init__(
-        self, page: ft.Page, get_settings_fn, bot_text_ref, audio_focus, audio_break
-    ):
+    def __init__(self, page: ft.Page, get_settings_fn, audio_focus, audio_break):
         self.page = page
+        self.is_mobile = self.page.platform in [
+            ft.PagePlatform.ANDROID,
+            ft.PagePlatform.IOS,
+        ]
         self.get_settings = get_settings_fn
-        self.bot_text = bot_text_ref
-
-        # Nhận động cơ âm thanh của Mobile
         self.audio_focus = audio_focus
         self.audio_break = audio_break
         self.is_muted = False
-
         # --- XP/Level from DB ---
 
         self.running = False
+        self._task_running = False
         self.mode = "work"
         self.time_left = 30 * 60
         self.total_time = 30 * 60
@@ -66,8 +79,6 @@ class FocusManager:
         except:
             self.current_xp, self.current_level = 0, 1
 
-        self.bot_text.visible = False
-        self.bot_text.value = ""
         self.health_quotes = [
             "Quy tắc 20-20-20: Nhìn xa 20 feet (6m) trong 20 giây.",
             "Xoay nhẹ cổ tay và khớp vai để tránh bị bó cơ.",
@@ -81,29 +92,29 @@ class FocusManager:
         self.overlay_emoji = ft.Text(db.get_species_emoji(self.current_level), size=100)
         self.main_emoji = ft.Text(db.get_species_emoji(self.current_level), size=100)
         self.overlay_timer_text = ft.Text(
-            "30:00", size=70, weight=ft.FontWeight.W_600, color=ft.colors.WHITE
+            "30:00", size=70, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE
         )
         self.overlay_status = ft.Text(
-            "Đang tập trung...", size=20, color=ft.colors.WHITE
+            "Đang tập trung...", size=20, color=ft.Colors.WHITE
         )
         self.health_text = ft.Text(
             random.choice(self.health_quotes),
             italic=True,
             size=14,
             text_align=ft.TextAlign.CENTER,
-            color=ft.colors.with_opacity(0.85, ft.colors.WHITE),
+            color=ft.Colors.with_opacity(0.85, ft.Colors.WHITE),
         )
         self.close_btn = ft.IconButton(
-            icon=ft.icons.CLOSE,
+            icon=ft.Icons.CLOSE,
             on_click=self.close_overlay,
             icon_size=30,
-            icon_color=ft.colors.WHITE,
+            icon_color=ft.Colors.WHITE,
         )
 
         self.pomodoro_overlay = ft.Container(
             expand=True,
             visible=False,
-            bgcolor=ft.colors.with_opacity(0.98, ft.colors.BLACK),
+            bgcolor=ft.Colors.with_opacity(0.98, ft.Colors.BLACK),
             padding=30,
             content=ft.Column(
                 [
@@ -115,7 +126,7 @@ class FocusManager:
                             self.overlay_status,
                             ft.Container(height=30),
                             ft.Card(
-                                color=ft.colors.with_opacity(0.15, ft.colors.WHITE),
+                                bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE),
                                 content=ft.Container(
                                     padding=20, content=self.health_text
                                 ),
@@ -139,17 +150,18 @@ class FocusManager:
             on_change=self.on_slider_change,
         )
         self.pomo_display = ft.Text(
-            "30:00", size=40, weight=ft.FontWeight.W_600, color=ft.colors.WHITE
+            "30:00", size=40, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE
         )
         self.pomo_progress = ft.ProgressBar(
             value=0,
-            color=ft.colors.PURPLE_400,
-            bgcolor=ft.colors.PURPLE_50,
+            color=ft.Colors.PURPLE_400,
+            bgcolor=ft.Colors.PURPLE_50,
             height=8,
+            border_radius=4,
         )
 
         self.play_btn = ft.IconButton(
-            icon=ft.icons.PLAY_ARROW,
+            icon=ft.Icons.PLAY_ARROW,
             icon_size=40,
             icon_color="purple700",
             on_click=self.toggle_timer,
@@ -175,13 +187,13 @@ class FocusManager:
             "STUDYGRAM LABS",
             size=22,
             weight="bold",
-            color=ft.colors.WHITE,
+            color=ft.Colors.WHITE,
             text_align=ft.TextAlign.CENTER,
         )
 
         # Timer display setup
         self.pomo_display.size = 65
-        self.pomo_display.color = ft.colors.WHITE
+        self.pomo_display.color = ft.Colors.WHITE
         self.pomo_display.weight = "bold"
 
         # ProgressRing (circular timer)
@@ -190,13 +202,13 @@ class FocusManager:
             height=280,
             stroke_width=8,
             color=C_PRI,
-            bgcolor=ft.colors.with_opacity(0.1, ft.colors.WHITE),
+            bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
             value=1.0,
         )
 
         timer_circle = ft.Container(
             alignment=ft.alignment.Alignment(0, 0),
-            padding=ft.padding.symmetric(vertical=20),
+            padding=ft.Padding(0, 20, 0, 20),
             content=ft.Stack(
                 [
                     ft.Container(
@@ -214,7 +226,7 @@ class FocusManager:
                                 ft.Text(
                                     "F O C U S",
                                     size=12,
-                                    color=ft.colors.with_opacity(0.6, ft.colors.WHITE),
+                                    color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
                                 ),
                             ],
                             alignment=ft.MainAxisAlignment.CENTER,
@@ -238,9 +250,9 @@ class FocusManager:
             ),
         )
         self.reset_btn = ft.IconButton(
-            icon=ft.icons.RESTART_ALT,
+            icon=ft.Icons.RESTART_ALT,
             icon_size=28,
-            icon_color=ft.colors.with_opacity(0.5, ft.colors.WHITE),
+            icon_color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE),
             on_click=self.close_overlay,
         )
 
@@ -254,13 +266,14 @@ class FocusManager:
         self.tree_xp_bar = ft.ProgressBar(
             value=current_xp / 500,
             color=C_TER,
-            bgcolor=ft.colors.with_opacity(0.1, ft.colors.WHITE),
+            bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
             height=5,
+            border_radius=3,
         )
         tree_link_row = ft.Container(
             padding=ft.padding.symmetric(horizontal=15, vertical=10),
             border_radius=15,
-            bgcolor=ft.colors.with_opacity(0.08, ft.colors.WHITE),
+            bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.WHITE),
             content=ft.Row(
                 [
                     ft.Text(species_emoji, size=22),
@@ -270,13 +283,13 @@ class FocusManager:
                                 f"Level {current_level}",
                                 size=13,
                                 weight="bold",
-                                color=ft.colors.WHITE,
+                                color=ft.Colors.WHITE,
                             ),
                             self.tree_xp_bar,
                             ft.Text(
                                 f"{current_xp}/500 XP",
                                 size=10,
-                                color=ft.colors.with_opacity(0.6, ft.colors.WHITE),
+                                color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
                             ),
                         ],
                         spacing=2,
@@ -286,24 +299,6 @@ class FocusManager:
                 spacing=10,
             ),
         )
-
-        self.local_bot_text = ft.Text(
-            color=ft.colors.with_opacity(0.85, ft.colors.WHITE), size=13
-        )
-        self.bot_container = ft.Container(
-            visible=False,
-            padding=15,
-            border_radius=15,
-            bgcolor=ft.colors.with_opacity(0.1, ft.colors.WHITE),
-            content=ft.Row(
-                [
-                    ft.Icon(ft.icons.SMART_TOY, color=C_PRI, size=20),
-                    self.local_bot_text,
-                ],
-                spacing=10,
-            ),
-        )
-        self.bot_text.size = 13
 
         # Final assembly
         self.pomodoro_card = ft.Container(
@@ -317,7 +312,6 @@ class FocusManager:
                     controls_row,
                     self.pomo_slider,
                     tree_link_row,
-                    self.bot_container,
                 ],
                 spacing=10,
                 scroll=ft.ScrollMode.HIDDEN,
@@ -362,12 +356,12 @@ class FocusManager:
             self.pomo_progress.value = ratio
 
         self.pomo_display.color = (
-            ft.colors.WHITE
+            ft.Colors.WHITE
             if self.mode == "work"
-            else ft.colors.with_opacity(0.7, ft.colors.WHITE)
+            else ft.Colors.with_opacity(0.7, ft.Colors.WHITE)
         )
         self.pomo_progress.color = (
-            ft.colors.PURPLE_400 if self.mode == "work" else ft.colors.PURPLE_200
+            ft.Colors.PURPLE_400 if self.mode == "work" else ft.Colors.PURPLE_200
         )
 
         try:
@@ -438,10 +432,10 @@ class FocusManager:
                                 self.page.snack_bar = ft.SnackBar(
                                     ft.Text(
                                         f"🎉 LÊN CẤP {self.current_level}! Mở khóa: {db.get_species_emoji(self.current_level)}!",
-                                        color=ft.colors.WHITE,
+                                        color=ft.Colors.WHITE,
                                         weight="bold",
                                     ),
-                                    bgcolor=ft.colors.PINK_600,
+                                    bgcolor=ft.Colors.PINK_600,
                                 )
                                 self.page.snack_bar.open = True
                             except:
@@ -484,9 +478,9 @@ class FocusManager:
                             self.page.snack_bar = ft.SnackBar(
                                 ft.Text(
                                     f"Đã cộng +{earned_xp} XP! Nghỉ ngơi thôi. 🌳",
-                                    color=ft.colors.WHITE,
+                                    color=ft.Colors.WHITE,
                                 ),
-                                bgcolor=ft.colors.GREEN_700,
+                                bgcolor=ft.Colors.GREEN_700,
                             )
                             self.page.snack_bar.open = True
                         except:
@@ -498,15 +492,15 @@ class FocusManager:
                         self.mode = "work"
                         self.time_left = int(self.pomo_slider.value) * 60
                         self.total_time = self.time_left
-                        self.play_btn.icon = ft.icons.PLAY_ARROW
+                        self.play_btn.icon = ft.Icons.PLAY_ARROW
 
                         try:
                             self.page.snack_bar = ft.SnackBar(
                                 ft.Text(
                                     "Hết giờ nghỉ! Quay lại làm việc nào. 🚀",
-                                    color=ft.colors.WHITE,
+                                    color=ft.Colors.WHITE,
                                 ),
-                                bgcolor=ft.colors.BLUE_700,
+                                bgcolor=ft.Colors.BLUE_700,
                             )
                             self.page.snack_bar.open = True
                         except:
@@ -533,7 +527,7 @@ class FocusManager:
     def apply_penalty(self):
         """KỶ LUẬT SẮT: Penalty when window loses focus during work."""
         self.running = False
-        self.play_btn.icon = ft.icons.PLAY_ARROW
+        self.play_btn.icon = ft.Icons.PLAY_ARROW
 
         # Deduct 50 XP (min 0)
         self.current_xp, self.current_level = db.deduct_xp(50)
@@ -556,10 +550,10 @@ class FocusManager:
             self.page.snack_bar = ft.SnackBar(
                 ft.Text(
                     "KỶ LUẬT SẮT: Bạn đã xao nhãng! Cây héo và bị trừ 50 XP! 🥀",
-                    color=ft.colors.WHITE,
+                    color=ft.Colors.WHITE,
                     weight="bold",
                 ),
-                bgcolor=ft.colors.RED_700,
+                bgcolor=ft.Colors.RED_700,
             )
             self.page.snack_bar.open = True
         except:
@@ -582,15 +576,11 @@ class FocusManager:
             self.mode = "work"
             self.total_time = int(self.pomo_slider.value) * 60
             self.time_left = self.total_time
-            self.play_btn.icon = ft.icons.STOP
+            self.play_btn.icon = ft.Icons.STOP
 
             # Play focus start sound
             if self.audio_focus and not self.is_muted:
                 self.audio_focus.play()
-
-            # Show bot with starting message
-            self.local_bot_text.value = "Sẵn sàng vào việc chưa ông giáo? 🤖🌲"
-            self.bot_container.visible = True
 
             self.health_text.value = random.choice(self.health_quotes)
             self.pomodoro_overlay.visible = True
@@ -600,11 +590,9 @@ class FocusManager:
             self.page.run_task(self.update_quotes_task)
         else:
             self.running = False
-            self.play_btn.icon = ft.icons.PLAY_ARROW
+            self.play_btn.icon = ft.Icons.PLAY_ARROW
             self.time_left = int(self.pomo_slider.value) * 60
             self.total_time = self.time_left
-            # Hide bot when stopped
-            self.bot_container.visible = False
 
         self.play_btn.update()
         self.update_ui()
@@ -613,14 +601,13 @@ class FocusManager:
         self.running = False
         self.time_left = int(self.pomo_slider.value) * 60
         self.total_time = self.time_left
-        self.play_btn.icon = ft.icons.PLAY_ARROW
+        self.play_btn.icon = ft.Icons.PLAY_ARROW
         self.pomodoro_overlay.visible = False
-        self.bot_container.visible = False
         self.update_ui()
         self.page.update()
 
     def reload_sounds(self):
-        """Reload sound settings from DB and update ft.Audio sources."""
+        """Reload sound settings from DB and update fta.Audio sources."""
         try:
             snd_settings = db.get_sound_settings()
             self.is_muted = bool(snd_settings.get("is_muted", 0))
@@ -635,118 +622,233 @@ class FocusManager:
             print(f"Reload sounds error: {e}")
 
 
+def _seed_dummy_icpc_tree():
+    """Seed the Python ICPC skill tree if it doesn't already exist."""
+    existing = db.get_skill_tree_by_name("Python ICPC")
+    if existing:
+        return  # already seeded
+
+    tree_id = db.create_skill_tree(
+        "Python ICPC",
+        "Lộ trình luyện thi lập trình thi đấu ICPC bằng Python",
+    )
+
+    # Give starter SP so the user can begin unlocking
+    db.add_global_sp(150)
+
+    # Root node — Cú pháp & Mảng (no parent)
+    root_id = db.create_skill_node(
+        tree_id,
+        None,
+        "Cú pháp & Mảng",
+        description="Nền tảng Python: biến, vòng lặp, mảng, chuỗi.",
+        sp_cost=20,
+        is_repeatable=False,
+    )
+    db.add_node_task(
+        root_id, "checklist", "Giải 5 bài cơ bản trên Codeforces (A-level)"
+    )
+    db.add_node_task(
+        root_id, "checklist", "Viết chương trình sắp xếp mảng bằng 3 thuật toán"
+    )
+
+    # Branch A — Cấu trúc dữ liệu
+    ds_id = db.create_skill_node(
+        tree_id,
+        root_id,
+        "Cấu trúc dữ liệu",
+        description="Stack, Queue, Linked List, Heap, HashMap.",
+        sp_cost=30,
+        is_repeatable=False,
+        exclusive_group_id="icpc_branch_1",
+    )
+    db.add_node_task(ds_id, "checklist", "Implement Stack & Queue từ đầu")
+    db.add_node_task(ds_id, "text_review", "Viết báo cáo so sánh HashMap vs TreeMap")
+
+    # Branch B — Thuật toán (mutually exclusive with Branch A)
+    algo_id = db.create_skill_node(
+        tree_id,
+        root_id,
+        "Thuật toán",
+        description="Two Pointers, Binary Search, Greedy, Backtracking.",
+        sp_cost=30,
+        is_repeatable=False,
+        exclusive_group_id="icpc_branch_1",
+    )
+    db.add_node_task(algo_id, "checklist", "Giải 10 bài Two Pointers trên LeetCode")
+    db.add_node_task(algo_id, "code_snippet", "Viết Binary Search template chuẩn")
+
+    # Leaf nodes under Branch A
+    db.create_skill_node(
+        tree_id,
+        ds_id,
+        "Segment Tree & BIT",
+        description="Cây phân đoạn, Binary Indexed Tree.",
+        sp_cost=50,
+        is_repeatable=True,
+    )
+    db.create_skill_node(
+        tree_id,
+        ds_id,
+        "Disjoint Set Union",
+        description="Union-Find cho bài toán đồ thị.",
+        sp_cost=40,
+        is_repeatable=False,
+    )
+
+    # Leaf nodes under Branch B
+    db.create_skill_node(
+        tree_id,
+        algo_id,
+        "Quy hoạch động (DP)",
+        description="Knapsack, LIS, LCS, DP trên cây.",
+        sp_cost=60,
+        is_repeatable=True,
+    )
+    db.create_skill_node(
+        tree_id,
+        algo_id,
+        "Đồ thị nâng cao",
+        description="BFS/DFS, Dijkstra, Floyd, Kruskal.",
+        sp_cost=50,
+        is_repeatable=False,
+    )
+
+
 def main(page: ft.Page):
     page.title = "Studygram"
+    page.window.width = 390
+    page.window.height = 844
+
+    import csv
+    import os
+
+    # --- HÀM LÕI XỬ LÝ DỮ LIỆU CSV (DÙNG CHUNG) ---
+    def process_csv_file(file_path):
+        try:
+            count = 0
+            with open(file_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    name = row.get("name", "").strip()
+                    if not name:
+                        continue
+
+                    desc = row.get("description", "").strip()
+
+                    # Chống crash khi cột weight trong Excel bị bỏ trống
+                    weight_str = row.get("weight", "1").strip()
+                    try:
+                        weight = int(weight_str) if weight_str else 1
+                    except ValueError:
+                        weight = 1
+
+                    freq = row.get("frequency", "0,1,2,3,4,5,6").strip()
+
+                    db.add_habit(name, desc, weight, freq)
+                    count += 1
+
+            page.snack_bar = ft.SnackBar(
+                ft.Text(
+                    f"Thành công! Đã nạp {count} thói quen vào hệ thống. 🎉",
+                    color=ft.Colors.WHITE,
+                    weight="bold",
+                ),
+                bgcolor=ft.Colors.GREEN_700,
+            )
+            page.snack_bar.open = True
+            page.update()
+        except Exception as ex:
+            page.snack_bar = ft.SnackBar(
+                ft.Text(f"Lỗi đọc file CSV: {str(ex)}", color=ft.Colors.WHITE),
+                bgcolor=ft.Colors.RED_700,
+            )
+            page.snack_bar.open = True
+            page.update()
+
+    # === 1. KIỂM TRA NỀN TẢNG ===
+    is_mobile = page.platform in [
+        ft.PagePlatform.ANDROID,
+        ft.PagePlatform.IOS,
+        "android",
+        "ios",
+    ]
+
+    # Khởi tạo biến trống trên Windows để tránh Crash
+    csv_picker = None
+    audio_picker = None
+    audio_focus = None
+    audio_break = None
+    bg_music = None
+
+    # === 2. CHỈ NẠP FILEPICKER & AUDIO TRÊN ĐIỆN THOẠI ===
+    if is_mobile:
+
+        def on_csv_picked(e: ft.FilePickerResultEvent):
+            if e.files:
+                process_csv_file(e.files[0].path)
+
+        csv_picker = ft.FilePicker()
+        csv_picker.on_result = on_csv_picked
+
+        audio_picker = ft.FilePicker()
+        audio_focus = fta.Audio(src="sounds/focus_start.mp3", autoplay=False)
+        audio_break = fta.Audio(src="sounds/break_start.mp3", autoplay=False)
+        bg_music = fta.Audio(autoplay=False, volume=0.5)
+
+        page.overlay.extend(
+            [csv_picker, audio_picker, audio_focus, audio_break, bg_music]
+        )
+
+        def on_audio_picked(e: ft.FilePickerResultEvent):
+            if e.files and len(e.files) > 0:
+                if bg_music is None:
+                    return
+                bg_music.src = e.files[0].path
+                bg_music.update()
+                page.snack_bar = ft.SnackBar(
+                    ft.Text("Đã tải bài hát thành công!", color=ft.Colors.WHITE),
+                    bgcolor=ft.Colors.GREEN_700,
+                )
+                page.snack_bar.open = True
+                page.update()
+
+        audio_picker.on_result = on_audio_picked
+
+    page.update()  # Chốt sổ các control ngầm
+
+    # 4. KHỞI TẠO DỮ LIỆU & GIAO DIỆN
     db.init_db()
+    _seed_dummy_icpc_tree()
     settings = db.get_settings()
-    audio_focus = ft.Audio(src="sounds/focus_start.mp3", autoplay=False)
-    audio_break = ft.Audio(src="sounds/break_start.mp3", autoplay=False)
-    page.overlay.extend([audio_focus, audio_break])
 
-    # --- FilePicker for Sound (MOBILE SAFE) ---
-    target_sound_key_ref = [""]
-
-    def on_file_picked(e: ft.FilePickerResultEvent):
-        if e.files and len(e.files) > 0 and target_sound_key_ref[0]:
-            _apply_custom_sound(target_sound_key_ref[0], e.files[0].path)
-            refresh_settings()
-            try:
-                render_settings()
-            except:
-                pass
-
-    sound_file_picker = ft.FilePicker(on_result=on_file_picked)
-    page.overlay.append(sound_file_picker)
     page.theme_mode = (
         ft.ThemeMode.LIGHT if settings["theme"] == "light" else ft.ThemeMode.DARK
     )
-    page.theme = ft.Theme(color_scheme_seed=ft.colors.PURPLE, use_material3=True)
+    page.theme = ft.Theme(color_scheme_seed=ft.Colors.PURPLE, use_material3=True)
     page.bgcolor = "#F8F9FA" if settings["theme"] == "light" else "#121212"
     page.padding = 15
     page.window_full_screen = False
 
-    # --- STRICT MODE: Window blur penalty ---
     def on_window_event(e):
         if e.data == "blur" and focus_manager.running and focus_manager.mode == "work":
             focus_manager.apply_penalty()
 
-    page.window_width = 390
-    # --- ĐÂY MỚI LÀ CHỖ ĐỂ KHỞI TẠO (CHẠY 1 LẦN) ---
+    page.on_window_event = on_window_event
 
-    # --- Bot Card (Bản Titanium - Chống mọi loại lỗi) ---
-    bot_text = ft.Text(
-        value="Studygram Bot: Chào ông giáo! Sẵn sàng học chưa?",
-        size=14,
-        italic=True,
-        color="onSurface",  # Dùng string an toàn hơn gọi ft.colors
-    )
-
-    bot_card = ft.Card(
-        elevation=0,
-        color=ft.colors.TRANSPARENT,  # BẮT BUỘC LÀ bgcolor, tuyệt đối không dùng color ở đây
-        margin=ft.margin.only(bottom=15),
-        content=ft.Container(
-            bgcolor=ft.colors.with_opacity(0.15, ft.colors.WHITE),
-            padding=15,
-            border=ft.border.all(1, ft.colors.PURPLE_400),
-            border_radius=10,
-            content=ft.Row(controls=[bot_text], wrap=True),  # Ép chữ phải xuống dòng
-        ),
-    )
-    global_habit_count = 0
-
-    def update_bot(situation):
-        import random
-
-        if situation == "OVER_LIMIT":
-            bot_card.content.bgcolor = (
-                ft.colors.RED_900 if settings["theme"] == "dark" else ft.colors.RED_100
-            )
-            bot_text.bgcolor = (
-                ft.colors.WHITE if settings["theme"] == "dark" else ft.colors.RED_900
-            )
-            page.snack_bar = ft.SnackBar(
-                ft.Text(
-                    "CẢNH BÁO! Vượt ngân sách rồi ông giáo ơi!", color=ft.colors.WHITE
-                ),
-                bgcolor=ft.colors.RED_700,
-            )
-            page.snack_bar.open = True
-            page.update()
-        else:
-            is_d = settings["theme"] == "dark"
-            bot_card.content.bgcolor = (
-                ft.colors.with_opacity(0.1, ft.colors.PURPLE)
-                if is_d
-                else ft.colors.PURPLE_50
-            )
-            bot_text.color = "onSurface"
-
-            if random.random() < 0.3:
-                bot_text.value = f"Studygram Bot: {random.choice(HUST_QUOTES)}"
-            else:
-                opts = BOT_PHRASES.get(situation, ["Xin chào ông giáo! 🤖"])
-                bot_text.value = f"Studygram Bot: {random.choice(opts)}"
-
-        try:
-            bot_text.update()
-            bot_card.update()
-        except:
-            pass
-
-    page.window_height = 844
+    # ---- BÊN DƯỚI LÀ HÀM def _apply_custom_sound... ÔNG GIÁO GIỮ NGUYÊN NHÉ ----
 
     def _apply_custom_sound(target_key, file_path_str):
-        """Copy a sound file to assets/sounds and update DB + ft.Audio."""
+        """Copy a sound file to assets/sounds and update DB + fta.Audio."""
         try:
             file_path_str = file_path_str.strip()
             if not file_path_str or not os.path.isfile(file_path_str):
                 page.snack_bar = ft.SnackBar(
                     ft.Text(
                         "Không tìm thấy file! Kiểm tra lại đường dẫn.",
-                        color=ft.colors.WHITE,
+                        color=ft.Colors.WHITE,
                     ),
-                    bgcolor=ft.colors.RED_700,
+                    bgcolor=ft.Colors.RED_700,
                 )
                 page.snack_bar.open = True
                 page.update()
@@ -762,8 +864,8 @@ def main(page: ft.Page):
             elif audio_break and target_key == "break_start_path":
                 audio_break.src = rel_path
             page.snack_bar = ft.SnackBar(
-                ft.Text(f"Đã nạp: {filename} 🔊", color=ft.colors.WHITE),
-                bgcolor=ft.colors.GREEN_700,
+                ft.Text(f"Đã nạp: {filename} 🔊", color=ft.Colors.WHITE),
+                bgcolor=ft.Colors.GREEN_700,
             )
             page.snack_bar.open = True
             page.update()
@@ -785,7 +887,7 @@ def main(page: ft.Page):
         page.theme_mode = (
             ft.ThemeMode.LIGHT if settings["theme"] == "light" else ft.ThemeMode.DARK
         )
-        page.theme = ft.Theme(color_scheme_seed=ft.colors.PURPLE, use_material3=True)
+        page.theme = ft.Theme(color_scheme_seed=ft.Colors.PURPLE, use_material3=True)
         page.bgcolor = "#F8F9FA" if settings["theme"] == "light" else "#121212"
         focus_manager.update_ui()
         page.update()
@@ -794,9 +896,7 @@ def main(page: ft.Page):
     def _get_settings():
         return settings
 
-    focus_manager = FocusManager(
-        page, _get_settings, bot_text, audio_focus, audio_break
-    )
+    focus_manager = FocusManager(page, _get_settings, audio_focus, audio_break)
     page.on_window_event = on_window_event
 
     def get_color_intensity(ratio, color_set):
@@ -813,64 +913,498 @@ def main(page: ft.Page):
         idx = e.control.selected_index
         content_container.controls.clear()
         if idx == 0:
-            render_habits()
-        elif idx == 1:
-            render_finance()
-        elif idx == 2:
             render_focus()
+        elif idx == 1:
+            render_quests()
+        elif idx == 2:
+            render_finance()
         elif idx == 3:
-            render_settings()
+            render_explore()
         page.update()
 
     nav_bar = ft.NavigationBar(
         selected_index=0,
         destinations=[
-            ft.NavigationDestination(
-                label="Habits", icon=ft.icons.CHECK_CIRCLE_OUTLINE
+            ft.NavigationBarDestination(
+                label="Focus", icon=ft.Icons.CENTER_FOCUS_STRONG
             ),
-            ft.NavigationDestination(label="Finance", icon=ft.icons.ATTACH_MONEY),
-            ft.NavigationDestination(label="Focus", icon=ft.icons.CENTER_FOCUS_STRONG),
-            ft.NavigationDestination(label="Settings", icon=ft.icons.SETTINGS),
+            ft.NavigationBarDestination(label="Quests", icon=ft.Icons.CHECKLIST),
+            ft.NavigationBarDestination(label="Finance", icon=ft.Icons.ATTACH_MONEY),
+            ft.NavigationBarDestination(label="Explore", icon=ft.Icons.EXPLORE),
         ],
         on_change=handle_tab_change,
     )
 
-    content_container = ft.Column(expand=True, scroll="auto", spacing=20)
+    content_container = ft.Column(
+        expand=True,
+        scroll=ft.ScrollMode.ALWAYS,
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+    )
 
     # --- Render Functions ---
-    def render_habits():
+    def render_quests():
         try:
             content_container.controls.clear()
-            content_container.controls.append(bot_card)
+            content_container.scroll = "auto"
 
+            import importlib
+
+            importlib.reload(db)
+
+            # --- 🔮 RPG SKILL TREE UI ---
+            tree = db.get_skill_tree_by_name("Python ICPC")
+            if not tree:
+                _seed_dummy_icpc_tree()
+                tree = db.get_skill_tree_by_name("Python ICPC")
+
+            nodes = db.get_tree_nodes(tree["id"]) if tree else []
+            global_sp = db.get_global_sp()
+
+            is_builder = page.session.store.get("builder_mode") or False
+
+            header_row = ft.Row(
+                [
+                    ft.Text(
+                        f"Điểm Kỹ Năng (SP): {global_sp} \U0001f52e",
+                        size=18,
+                        weight="bold",
+                        color=ft.Colors.PURPLE_ACCENT,
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            )
+
+            if is_builder:
+
+                def on_create_root(e):
+                    root_name_field = ft.TextField(label="Tên Kỹ Năng Gốc")
+
+                    def on_root_save(e2):
+                        db.create_skill_node(
+                            tree_id=tree["id"] if tree else 1,
+                            parent_id=None,
+                            name=root_name_field.value or "Nhánh Gốc Mới",
+                            description="",
+                            sp_cost=20,
+                            is_repeatable=False,
+                        )
+                        root_dialog.open = False
+                        render_quests()
+                        page.update()
+
+                    def on_root_dismiss(ex):
+                        if root_dialog in page.overlay:
+                            page.overlay.remove(root_dialog)
+                        page.update()
+
+                    root_dialog = ft.AlertDialog(
+                        title=ft.Text("Thêm Nhánh Gốc"),
+                        content=root_name_field,
+                        actions=[
+                            ft.TextButton(
+                                "Hủy",
+                                on_click=lambda _: (
+                                    setattr(root_dialog, "open", False) or page.update()
+                                ),
+                            ),
+                            ft.ElevatedButton("Tạo Gốc", on_click=on_root_save),
+                        ],
+                        on_dismiss=on_root_dismiss,
+                    )
+                    page.overlay.append(root_dialog)
+                    root_dialog.open = True
+                    page.update()
+
+                header_row.controls.append(
+                    ft.ElevatedButton(
+                        "+ Tạo Nhánh Gốc Mới",
+                        icon=ft.Icons.ADD_BOX,
+                        on_click=on_create_root,
+                    )
+                )
+
+            content_container.controls.append(
+                ft.Container(padding=10, content=header_row)
+            )
+
+            def handle_node_click(e):
+                node_data = e.control.data
+                if is_builder:
+                    name_field = ft.TextField(
+                        label="Tên Kỹ Năng", value=node_data["name"]
+                    )
+                    desc_field = ft.TextField(
+                        label="Mô tả", value=node_data["description"]
+                    )
+                    sp_field = ft.TextField(
+                        label="SP Yêu cầu",
+                        value=str(node_data["sp_cost"]),
+                        keyboard_type=ft.KeyboardType.NUMBER,
+                    )
+                    repeat_switch = ft.Switch(
+                        label="Cho phép cày lặp lại (Farm SP)",
+                        value=bool(node_data["is_repeatable"]),
+                    )
+
+                    def on_save(e_save):
+                        db.update_skill_node(
+                            node_data["id"],
+                            name_field.value,
+                            desc_field.value,
+                            int(sp_field.value or 0),
+                            repeat_switch.value,
+                        )
+                        dialog.open = False
+                        render_quests()
+                        page.update()
+
+                    def on_delete(e_del):
+                        db.delete_skill_node(node_data["id"])
+                        dialog.open = False
+                        render_quests()
+                        page.update()
+
+                    def on_add_child(e_add):
+                        dialog.open = False
+                        child_name_field = ft.TextField(label="Tên Kỹ Năng Con")
+
+                        def on_child_save(e_csave):
+                            db.create_skill_node(
+                                tree_id=tree["id"],
+                                parent_id=node_data["id"],
+                                name=child_name_field.value or "Kỹ Năng Mới",
+                                description="",
+                                sp_cost=10,
+                                is_repeatable=False,
+                            )
+                            child_dialog.open = False
+                            render_quests()
+                            page.update()
+
+                        def on_child_dismiss(ex):
+                            if child_dialog in page.overlay:
+                                page.overlay.remove(child_dialog)
+                            page.update()
+
+                        child_dialog = ft.AlertDialog(
+                            title=ft.Text("Thêm Nhánh Con"),
+                            content=child_name_field,
+                            actions=[
+                                ft.TextButton(
+                                    "Hủy",
+                                    on_click=lambda _: (
+                                        setattr(child_dialog, "open", False)
+                                        or page.update()
+                                    ),
+                                ),
+                                ft.ElevatedButton("Thêm", on_click=on_child_save),
+                            ],
+                            on_dismiss=on_child_dismiss,
+                        )
+                        page.overlay.append(child_dialog)
+                        child_dialog.open = True
+                        page.update()
+
+                    def on_builder_dismiss(ex):
+                        if dialog in page.overlay:
+                            page.overlay.remove(dialog)
+                        page.update()
+
+                    dialog = ft.AlertDialog(
+                        title=ft.Text("Chỉnh Sửa (Builder)"),
+                        content=ft.Column(
+                            [name_field, desc_field, sp_field, repeat_switch],
+                            tight=True,
+                        ),
+                        actions=[
+                            ft.TextButton(
+                                "+ Thêm Nhánh", on_click=on_add_child, icon=ft.Icons.ADD
+                            ),
+                            ft.ElevatedButton(
+                                "Lưu",
+                                on_click=on_save,
+                                bgcolor=ft.Colors.PURPLE_700,
+                                color=ft.Colors.WHITE,
+                            ),
+                            ft.TextButton(
+                                "Xóa",
+                                on_click=on_delete,
+                                icon=ft.Icons.DELETE,
+                                icon_color=ft.Colors.RED,
+                            ),
+                        ],
+                        on_dismiss=on_builder_dismiss,
+                    )
+                    page.overlay.append(dialog)
+                    dialog.open = True
+                    page.update()
+                    return
+
+                if node_data["status"] == "locked":
+                    return
+                if node_data["status"] == "mastered" and not node_data["is_repeatable"]:
+                    return
+
+                def on_verify_click(e2):
+                    success, msg, new_status = db.invest_sp(node_data["id"])
+                    if not success and "đủ SP" not in msg:
+                        db.master_node(node_data["id"])
+                        msg = f"Đã hoàn thành: {node_data['name']}"
+
+                    bs.open = False
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text(msg), bgcolor=ft.Colors.GREEN_700
+                    )
+                    page.snack_bar.open = True
+                    page.update()
+                    render_quests()
+                    page.update()
+
+                bs = ft.BottomSheet(
+                    ft.Container(
+                        padding=20,
+                        content=ft.Column(
+                            [
+                                ft.Text(
+                                    node_data["name"],
+                                    size=20,
+                                    weight="bold",
+                                    color=ft.Colors.WHITE,
+                                ),
+                                ft.Text(
+                                    node_data["description"] or "Không có mô tả.",
+                                    color=ft.Colors.GREY_300,
+                                ),
+                                ft.Text(
+                                    f"SP yêu cầu: {node_data['sp_cost']}",
+                                    color=ft.Colors.PURPLE_ACCENT,
+                                ),
+                                ft.ElevatedButton(
+                                    "Xác minh & Nhận SP",
+                                    on_click=on_verify_click,
+                                    bgcolor=ft.Colors.PURPLE_700,
+                                    color=ft.Colors.WHITE,
+                                ),
+                            ],
+                            tight=True,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+                page.overlay.append(bs)
+                bs.open = True
+                page.update()
+
+            node_dict = {n["id"]: n for n in nodes}
+            children_dict = {}
+            root_id = None
+            for n in nodes:
+                pid = n["parent_id"]
+                if pid is None:
+                    root_id = n["id"]
+                if pid not in children_dict:
+                    children_dict[pid] = []
+                children_dict[pid].append(n)
+
+            def build_node_ui(node_id):
+                node = node_dict[node_id]
+                state = node["status"]
+
+                if state == "locked":
+                    bg = ft.Colors.GREY_900
+                    icon = ft.Icons.LOCK
+                    icon_color = ft.Colors.GREY_500
+                    glow = ft.Colors.TRANSPARENT
+                elif state == "unlocked":
+                    bg = ft.Colors.PURPLE_800
+                    icon = ft.Icons.PLAY_ARROW
+                    icon_color = ft.Colors.WHITE
+                    glow = ft.Colors.with_opacity(0.3, ft.Colors.PURPLE_800)
+                else:
+                    bg = ft.Colors.PURPLE_ACCENT_700
+                    icon = ft.Icons.CHECK_CIRCLE
+                    icon_color = ft.Colors.WHITE
+                    glow = ft.Colors.with_opacity(0.6, ft.Colors.PURPLE_ACCENT_700)
+
+                progress = (
+                    node["current_sp_invested"] / node["sp_cost"]
+                    if node["sp_cost"] > 0
+                    else 0
+                )
+                if state == "mastered":
+                    progress = 1.0
+
+                node_container = ft.Container(
+                    data=node,
+                    on_click=handle_node_click
+                    if (state != "locked" or is_builder)
+                    else None,
+                    content=ft.Column(
+                        [
+                            ft.Container(
+                                content=ft.Icon(icon, color=icon_color, size=35),
+                                width=80,
+                                height=80,
+                                border_radius=40,
+                                bgcolor=bg,
+                                alignment=ft.alignment.Alignment(0, 0),
+                                shadow=ft.BoxShadow(
+                                    blur_radius=20, color=glow, spread_radius=5
+                                )
+                                if glow != ft.Colors.TRANSPARENT
+                                else None,
+                            ),
+                            ft.Text(
+                                node["name"],
+                                size=14,
+                                weight="bold",
+                                text_align=ft.TextAlign.CENTER,
+                                color=bg if state != "locked" else ft.Colors.GREY_500,
+                            ),
+                            ft.ProgressBar(
+                                value=progress,
+                                color=ft.Colors.PURPLE_ACCENT,
+                                bgcolor=ft.Colors.GREY_900,
+                                width=120,
+                                height=6,
+                                border_radius=3,
+                            )
+                            if state != "locked"
+                            else ft.Container(height=6),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=10,
+                    ),
+                    padding=10,
+                    width=170,
+                )
+
+                children = children_dict.get(node_id, [])
+                if not children:
+                    return ft.Column(
+                        [node_container],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=0,
+                    )
+
+                v_line = ft.Container(width=2, height=20, bgcolor=ft.Colors.PURPLE_500)
+
+                children_cols = []
+                for child in children:
+                    children_cols.append(
+                        ft.Column(
+                            [
+                                ft.Container(
+                                    width=2, height=20, bgcolor=ft.Colors.PURPLE_500
+                                ),
+                                build_node_ui(child["id"]),
+                            ],
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=0,
+                        )
+                    )
+
+                children_row = ft.Row(
+                    children_cols,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    spacing=0,
+                )
+
+                if len(children) > 1:
+                    h_line_width = 170 * (len(children) - 1)
+                    h_line = ft.Container(
+                        width=h_line_width, height=2, bgcolor=ft.Colors.PURPLE_500
+                    )
+                    return ft.Column(
+                        [node_container, v_line, h_line, children_row],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=0,
+                    )
+                else:
+                    return ft.Column(
+                        [node_container, v_line, children_row],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=0,
+                    )
+
+            if root_id:
+                skill_tree = ft.Row(
+                    [build_node_ui(root_id)],
+                    scroll=ft.ScrollMode.ALWAYS,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                )
+            else:
+                skill_tree = ft.Container()
+
+            skill_tree_card = ft.Container(
+                bgcolor="#1E1B4B",
+                border_radius=20,
+                padding=20,
+                margin=ft.Margin(0, 0, 0, 20),
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "\U0001f332 Python ICPC Skill Tree",
+                            size=22,
+                            weight="bold",
+                            color=ft.Colors.PURPLE_200,
+                        ),
+                        ft.Divider(height=1, color=ft.Colors.PURPLE_900),
+                        ft.Container(height=10),
+                        skill_tree,
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+            content_container.controls.append(skill_tree_card)
+            content_container.controls.append(ft.Container(height=10))
+            content_container.controls.append(
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
+            )
+
+            # --- HABITS (existing logic) ---
             habits = db.get_all_habits()
             today_str = datetime.now().strftime("%Y-%m-%d")
             today_weekday = str(datetime.now().weekday())
             done_ids = db.get_habit_logs_for_date(today_str)
 
-            import datetime as dt
+            habit_view_mode = page.session.store.get("habit_view_mode") or "list"
+            if habit_view_mode == "canvas":
+                habit_view_mode = "grid"
 
-            # Logic MISSED_YESTERDAY
-            yesterday_str = (datetime.now() - dt.timedelta(days=1)).strftime("%Y-%m-%d")
-            y_done = db.get_habit_logs_for_date(yesterday_str)
-            y_habits = [
-                h
-                for h in habits
-                if str((datetime.now() - dt.timedelta(days=1)).weekday())
-                in (dict(h).get("frequency") or "0,1,2,3,4,5,6")
-            ]
-            if len(y_habits) > 0 and len(y_done) == 0:
-                update_bot("MISSED_LOGS")
+            def toggle_habit_view(e):
+                page.session.store.set(
+                    "habit_view_mode", "grid" if habit_view_mode == "list" else "list"
+                )
+                render_quests()
+                page.update()
+
+            view_toggle_btn = ft.IconButton(
+                icon=ft.Icons.GRID_VIEW
+                if habit_view_mode == "list"
+                else ft.Icons.VIEW_LIST,
+                on_click=toggle_habit_view,
+                tooltip="Lưới thói quen"
+                if habit_view_mode == "list"
+                else "Danh sách thói quen",
+            )
 
             content_container.controls.append(
                 ft.Container(
-                    content=ft.Text(
-                        "Studygram",
-                        size=24,
-                        weight=ft.FontWeight.W_600,
-                        color=ft.colors.PURPLE_400,
+                    content=ft.Row(
+                        [
+                            ft.Text(
+                                "✅ Thói Quen Hôm Nay",
+                                size=22,
+                                weight=ft.FontWeight.W_600,
+                                color=ft.Colors.PURPLE_400,
+                            ),
+                            view_toggle_btn,
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
-                    margin=ft.margin.only(top=20),
+                    margin=ft.Margin(0, 10, 0, 0),
                 )
             )
 
@@ -887,9 +1421,10 @@ def main(page: ft.Page):
             content_container.controls.append(
                 ft.ProgressBar(
                     value=progress,
-                    color=ft.colors.GREEN,
-                    bgcolor=ft.colors.GREEN_100,
+                    color=ft.Colors.GREEN,
+                    bgcolor=ft.Colors.GREEN_100,
                     height=8,
+                    border_radius=4,
                 )
             )
             content_container.controls.append(
@@ -901,24 +1436,24 @@ def main(page: ft.Page):
                 label="Tên thói quen",
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 expand=True,
             )
             desc_input = ft.TextField(
                 label="Mô tả chi tiết",
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 multiline=True,
                 expand=True,
             )
             weight_dd = ft.Dropdown(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Tỷ trọng",
                 options=[
                     ft.dropdown.Option("1"),
@@ -975,15 +1510,15 @@ def main(page: ft.Page):
                     desc_input.value = ""
                     for c in chips:
                         c.selected = True
-                    render_habits()
+                    render_quests()
                     page.update()
 
-            add_btn = ft.ElevatedButton(
+            add_btn = ft.Button(
                 "Thêm Thói Quen",
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=10),
-                    bgcolor=ft.colors.PURPLE_600,
-                    color=ft.colors.WHITE,
+                    bgcolor=ft.Colors.PURPLE_600,
+                    color=ft.Colors.WHITE,
                 ),
                 on_click=add_h,
             )
@@ -1002,62 +1537,254 @@ def main(page: ft.Page):
                 )
             )
             content_container.controls.append(
-                ft.Divider(height=1, color=ft.colors.GREY_800)
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
             )
 
-            habit_list = ft.Column(spacing=10)
             if not filtered_habits:
+                habit_list = ft.ListView(
+                    expand=True, spacing=10, scroll=ft.ScrollMode.ALWAYS
+                )
                 habit_list.controls.append(
-                   py ft.Text(
+                    ft.Text(
                         "Nghỉ ngơi thôi! Nay không có lịch thói quen nào.",
-                        color=ft.colors.GREY_500,
+                        color=ft.Colors.GREY_500,
                     )
                 )
+                content_container.controls.append(habit_list)
             else:
-                for h in filtered_habits:
-                    is_done = h["id"] in done_ids
-                    freq = dict(h).get("frequency") or "0,1,2,3,4,5,6"
-                    streak = db.get_habit_streak(h["id"], freq)
-
-                    def toggle_cb(e, hid=h["id"]):
-                        db.toggle_habit_log(hid, today_str, e.control.value)
-                        if e.control.value:
-                            nonlocal global_habit_count
-                            global_habit_count += 1
-                            if global_habit_count % 5 == 0:
-                                update_bot("HABIT_PRAISE")
-                        render_habits()
-                        page.update()
-
-                    def del_h(e, hid=h["id"]):
-                        db.delete_habit(hid)
-                        render_habits()
-                        page.update()
-
-                    habit_list.controls.append(
-                        ft.Container(
-                            padding=10,
-                            border_radius=10,
-                            bgcolor=ft.colors.with_opacity(0.02, ft.colors.ON_SURFACE),
-                            content=ft.Row(
-                                [
-                                    ft.Checkbox(
-                                        label=f"{h['name']} (W:{h['weight']} | Chuỗi: 🔥 {streak})",
-                                        value=is_done,
-                                        on_change=toggle_cb,
-                                        expand=True,
-                                    ),
-                                    ft.IconButton(
-                                        icon=ft.icons.DELETE_OUTLINE,
-                                        icon_color=ft.colors.RED_400,
-                                        on_click=del_h,
-                                    ),
-                                ],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                            ),
-                        )
+                if habit_view_mode == "list":
+                    habit_list = ft.ListView(
+                        expand=True, spacing=10, scroll=ft.ScrollMode.ALWAYS
                     )
-            content_container.controls.append(habit_list)
+                    for h in filtered_habits:
+                        is_done = h["id"] in done_ids
+                        freq = dict(h).get("frequency") or "0,1,2,3,4,5,6"
+                        streak = db.get_habit_streak(h["id"], freq)
+                        weight = dict(h).get("weight", 1)
+
+                        def toggle_cb(e, hid=h["id"]):
+                            db.toggle_habit_log(hid, today_str, e.control.value)
+                            render_quests()
+                            page.update()
+
+                        def del_h(e, hid=h["id"]):
+                            db.delete_habit(hid)
+                            render_quests()
+                            page.update()
+
+                        habit_list.controls.append(
+                            ft.Container(
+                                padding=15,
+                                border_radius=15,
+                                bgcolor=ft.Colors.with_opacity(
+                                    0.1, ft.Colors.PURPLE_300
+                                ),
+                                content=ft.Row(
+                                    [
+                                        ft.Checkbox(
+                                            value=is_done,
+                                            on_change=toggle_cb,
+                                        ),
+                                        ft.Column(
+                                            [
+                                                ft.Text(
+                                                    h["name"], size=18, weight="bold"
+                                                ),
+                                                ft.Text(
+                                                    dict(h).get("description", "")
+                                                    or "",
+                                                    size=12,
+                                                    color=ft.Colors.WHITE_54,
+                                                ),
+                                            ],
+                                            expand=True,
+                                            spacing=2,
+                                        ),
+                                        ft.Column(
+                                            [
+                                                ft.Row(
+                                                    [
+                                                        ft.Icon(
+                                                            ft.Icons.LOCAL_FIRE_DEPARTMENT,
+                                                            color=ft.Colors.ORANGE,
+                                                            size=16,
+                                                        ),
+                                                        ft.Text(str(streak)),
+                                                    ]
+                                                ),
+                                                ft.Text(
+                                                    f"Tỉ trọng: {weight}",
+                                                    size=12,
+                                                    color=ft.Colors.GREY_400,
+                                                ),
+                                            ],
+                                            tight=True,
+                                            spacing=5,
+                                            alignment=ft.MainAxisAlignment.CENTER,
+                                        ),
+                                        ft.IconButton(
+                                            icon=ft.Icons.DELETE_OUTLINE,
+                                            icon_color=ft.Colors.RED_400,
+                                            on_click=del_h,
+                                        ),
+                                    ],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                ),
+                            )
+                        )
+                    content_container.controls.append(habit_list)
+                else:
+                    grid_row = ft.Row(
+                        wrap=True,
+                        spacing=15,
+                        run_spacing=15,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    )
+                    grid_container = ft.Column(
+                        controls=[grid_row],
+                        scroll=ft.ScrollMode.AUTO,
+                        expand=True,
+                    )
+
+                    for h in habits:
+                        if h["id"] in done_ids:
+                            continue
+
+                        freq = dict(h).get("frequency") or "0,1,2,3,4,5,6"
+                        streak = db.get_habit_streak(h["id"], freq)
+
+                        def create_grid_item(habit_data, streak_val):
+                            weight = int(dict(habit_data).get("weight", 1))
+                            dynamic_size = 90 + (weight - 1) * 25
+
+                            def open_sheet(e):
+                                def _confirm_done(e2):
+                                    sheet.open = False
+                                    page.update()
+
+                                    db.toggle_habit_log(
+                                        habit_data["id"], today_str, True
+                                    )
+
+                                    page.snack_bar = ft.SnackBar(
+                                        ft.Text(
+                                            "Đã hoàn thành thói quen!",
+                                            color=ft.Colors.WHITE,
+                                        ),
+                                        bgcolor=ft.Colors.GREEN_700,
+                                    )
+                                    page.snack_bar.open = True
+
+                                    # Step 1: Pulse out
+                                    widget.scale = 1.2
+                                    widget.update()
+
+                                    import time
+
+                                    time.sleep(0.15)
+
+                                    # Step 2: Shatter (shrink and fade)
+                                    widget.scale = 0.1
+                                    widget.opacity = 0
+                                    widget.update()
+                                    time.sleep(0.2)
+
+                                    # Step 3: Remove and reorganize
+                                    if widget in grid_row.controls:
+                                        grid_row.controls.remove(widget)
+                                    grid_row.update()
+
+                                    render_quests()
+                                    page.update()
+
+                                sheet = ft.BottomSheet(
+                                    ft.Container(
+                                        padding=20,
+                                        content=ft.Column(
+                                            [
+                                                ft.Text(
+                                                    f"Thói quen: {habit_data['name']}",
+                                                    size=20,
+                                                    weight="bold",
+                                                    color=ft.Colors.PURPLE_400,
+                                                ),
+                                                ft.ElevatedButton(
+                                                    "Đánh dấu hoàn thành hôm nay",
+                                                    icon=ft.Icons.CHECK_CIRCLE,
+                                                    bgcolor=ft.Colors.GREEN_600,
+                                                    color=ft.Colors.WHITE,
+                                                    on_click=_confirm_done,
+                                                ),
+                                            ],
+                                            tight=True,
+                                        ),
+                                    )
+                                )
+                                page.overlay.append(sheet)
+                                sheet.open = True
+                                page.update()
+
+                            widget = ft.Container(
+                                key=f"habit_{habit_data['id']}",
+                                width=dynamic_size,
+                                height=dynamic_size,
+                                border_radius=15,
+                                bgcolor=ft.Colors.PURPLE_800,
+                                shadow=ft.BoxShadow(
+                                    blur_radius=10,
+                                    spread_radius=2,
+                                    color=ft.Colors.with_opacity(0.3, ft.Colors.PURPLE),
+                                ),
+                                animate_scale=ft.Animation(
+                                    150, ft.AnimationCurve.DECELERATE
+                                ),
+                                animate_opacity=ft.Animation(
+                                    200, ft.AnimationCurve.EASE_OUT
+                                ),
+                                on_click=open_sheet,
+                                content=ft.Stack(
+                                    [
+                                        ft.Column(
+                                            [
+                                                ft.Container(
+                                                    content=ft.Row(
+                                                        [
+                                                            ft.Icon(
+                                                                ft.Icons.LOCAL_FIRE_DEPARTMENT,
+                                                                color=ft.Colors.ORANGE,
+                                                                size=14,
+                                                            ),
+                                                            ft.Text(
+                                                                str(streak_val), size=12
+                                                            ),
+                                                        ],
+                                                        alignment=ft.MainAxisAlignment.END,
+                                                        spacing=2,
+                                                    ),
+                                                    padding=ft.Padding(0, 5, 5, 0),
+                                                ),
+                                                ft.Container(
+                                                    content=ft.Text(
+                                                        habit_data["name"],
+                                                        weight="bold",
+                                                        size=16,
+                                                        text_align="center",
+                                                    ),
+                                                    alignment=ft.alignment.Alignment(
+                                                        0, 0
+                                                    ),
+                                                    expand=True,
+                                                ),
+                                            ]
+                                        )
+                                    ]
+                                ),
+                            )
+                            return widget
+
+                        grid_row.controls.append(create_grid_item(h, streak))
+
+                    content_container.controls.append(grid_container)
 
             page.update()
         except Exception as e:
@@ -1067,7 +1794,7 @@ def main(page: ft.Page):
             content_container.controls.append(
                 ft.Text(
                     f"LỖI RỒI ÔNG GIÁO ƠI:\n{str(e)}\n\n{traceback.format_exc()}",
-                    bgcolor=ft.colors.RED_500,
+                    bgcolor=ft.Colors.RED_500,
                     selectable=True,
                 )
             )
@@ -1076,7 +1803,6 @@ def main(page: ft.Page):
     def render_finance(filter_type="All"):
         try:
             content_container.controls.clear()
-            content_container.controls.append(bot_card)
             accounts = db.get_all_accounts()
             budget = settings["monthly_budget"]
             month_start = datetime.now().strftime("%Y-%m-01")
@@ -1086,17 +1812,15 @@ def main(page: ft.Page):
                 ft.Text("🎯 Ngân sách tháng này", size=20, weight=ft.FontWeight.W_600)
             )
             progress = min(spent / budget, 1.0) if budget > 0 else 1.0
-            if progress >= 1.0:
-                update_bot("OVER_LIMIT")
             color = (
-                ft.colors.GREEN
+                ft.Colors.GREEN
                 if progress < 0.5
-                else ft.colors.ORANGE
+                else ft.Colors.ORANGE
                 if progress < 0.8
-                else ft.colors.RED
+                else ft.Colors.RED
             )
             content_container.controls.append(
-                ft.ProgressBar(value=progress, color=color, bgcolor=ft.colors.GREY_200)
+                ft.ProgressBar(value=progress, color=color, bgcolor=ft.Colors.GREY_200)
             )
             content_container.controls.append(
                 ft.Text(
@@ -1110,13 +1834,13 @@ def main(page: ft.Page):
                 try:
                     pie_sections = []
                     pie_colors = [
-                        ft.colors.PURPLE_400,
-                        ft.colors.INDIGO_400,
-                        ft.colors.BLUE_400,
-                        ft.colors.TEAL_400,
-                        ft.colors.GREEN_400,
-                        ft.colors.ORANGE_400,
-                        ft.colors.RED_400,
+                        ft.Colors.PURPLE_400,
+                        ft.Colors.INDIGO_400,
+                        ft.Colors.BLUE_400,
+                        ft.Colors.TEAL_400,
+                        ft.Colors.GREEN_400,
+                        ft.Colors.ORANGE_400,
+                        ft.Colors.RED_400,
                     ]
                     for i, (cat, amt) in enumerate(cat_expenses.items()):
                         pie_sections.append(
@@ -1125,8 +1849,8 @@ def main(page: ft.Page):
                                 title=f"{cat}\n{int(amt / spent * 100)}%",
                                 title_style=ft.TextStyle(
                                     size=12,
-                                    bgcolor=ft.colors.with_opacity(
-                                        0.15, ft.colors.WHITE
+                                    bgcolor=ft.Colors.with_opacity(
+                                        0.15, ft.Colors.WHITE
                                     ),
                                     weight=ft.FontWeight.W_600,
                                 ),
@@ -1142,7 +1866,9 @@ def main(page: ft.Page):
                     )
                     content_container.controls.append(
                         ft.Container(
-                            content=pie_chart, alignment=ft.alignment.center, padding=10
+                            content=pie_chart,
+                            alignment=ft.alignment.Alignment(0, 0),
+                            padding=10,
                         )
                     )
                 except AttributeError:
@@ -1150,14 +1876,14 @@ def main(page: ft.Page):
                         ft.Text(
                             "PieChart không khả dụng trên phiên bản Flet này.",
                             size=12,
-                            color=ft.colors.GREY_500,
+                            color=ft.Colors.GREY_500,
                             italic=True,
                         )
                     )
 
             content_container.controls.append(ft.Container(height=20))
             content_container.controls.append(
-                ft.Divider(height=1, color=ft.colors.GREY_800)
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
             )
 
             content_container.controls.append(
@@ -1166,16 +1892,16 @@ def main(page: ft.Page):
             acc_name = ft.TextField(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Tên ví",
                 expand=True,
             )
             acc_bal = ft.TextField(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Số dư",
                 value="0",
                 expand=True,
@@ -1188,7 +1914,7 @@ def main(page: ft.Page):
                     page.update()
 
             content_container.controls.append(
-                ft.Row([acc_name, acc_bal, ft.IconButton(ft.icons.ADD, on_click=add_a)])
+                ft.Row([acc_name, acc_bal, ft.IconButton(ft.Icons.ADD, on_click=add_a)])
             )
 
             for a in accounts:
@@ -1206,8 +1932,8 @@ def main(page: ft.Page):
                                 expand=True,
                             ),
                             ft.IconButton(
-                                ft.icons.DELETE,
-                                icon_color=ft.colors.RED_300,
+                                ft.Icons.DELETE,
+                                icon_color=ft.Colors.RED_300,
                                 on_click=del_a,
                             ),
                         ]
@@ -1215,7 +1941,7 @@ def main(page: ft.Page):
                 )
             content_container.controls.append(ft.Container(height=20))
             content_container.controls.append(
-                ft.Divider(height=1, color=ft.colors.GREY_800)
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
             )
 
             content_container.controls.append(
@@ -1263,8 +1989,8 @@ def main(page: ft.Page):
             acc_select = ft.Dropdown(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 options=[ft.dropdown.Option(a["name"]) for a in accounts],
                 label="Chọn ví",
                 expand=True,
@@ -1272,8 +1998,8 @@ def main(page: ft.Page):
             acc_select2 = ft.Dropdown(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 options=[ft.dropdown.Option(a["name"]) for a in accounts],
                 label="Ví đích",
                 visible=False,
@@ -1290,45 +2016,64 @@ def main(page: ft.Page):
             amount_in = ft.TextField(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Số tiền",
                 value="0",
             )
             note_in = ft.TextField(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Ghi chú",
             )
 
             def save_t(e):
-                amt = float(amount_in.value or 0)
-                if amt <= 0:
+                # 1. Chống lỗi crash khi nhập chữ cái hoặc để trống
+                try:
+                    amt = float(amount_in.value or 0)
+                except ValueError:
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text("Vui lòng nhập định dạng số hợp lệ!"),
+                        bgcolor=ft.Colors.RED_700,
+                    )
+                    page.snack_bar.open = True
+                    page.update()
                     return
+
+                # Validate Inputs implicitly
+                if amt <= 0 or not acc_select.value:
+                    return
+
                 if t_type.value == "transfer":
-                    if acc_select.value != acc_select2.value:
-                        id_from = next(
-                            a["id"] for a in accounts if a["name"] == acc_select.value
-                        )
-                        id_to = next(
-                            a["id"] for a in accounts if a["name"] == acc_select2.value
-                        )
+                    if not acc_select2.value or acc_select.value == acc_select2.value:
+                        return
+
+                    # 2. Chống lỗi StopIteration crash khi không tìm thấy Ví
+                    id_from = next(
+                        (a["id"] for a in accounts if a["name"] == acc_select.value),
+                        None,
+                    )
+                    id_to = next(
+                        (a["id"] for a in accounts if a["name"] == acc_select2.value),
+                        None,
+                    )
+
+                    if id_from and id_to:
                         db.transfer_funds(
                             id_from, id_to, amt, acc_select.value, acc_select2.value
                         )
                 else:
                     aid = next(
-                        a["id"] for a in accounts if a["name"] == acc_select.value
+                        (a["id"] for a in accounts if a["name"] == acc_select.value),
+                        None,
                     )
-                    db.add_transaction(
-                        aid, amt, t_type.value, selected_cat, note_in.value
-                    )
-                    if t_type.value == "income":
-                        update_bot("INCOME")
-                    elif t_type.value == "expense":
-                        update_bot("EXPENSE")
+                    if aid:
+                        db.add_transaction(
+                            aid, amt, t_type.value, selected_cat, note_in.value
+                        )
+
                 render_finance(filter_type)
                 page.update()
 
@@ -1340,12 +2085,12 @@ def main(page: ft.Page):
                     acc_select2,
                     amount_in,
                     note_in,
-                    ft.ElevatedButton(
+                    ft.Button(
                         "Lưu giao dịch",
                         style=ft.ButtonStyle(
                             shape=ft.RoundedRectangleBorder(radius=10),
-                            bgcolor=ft.colors.PURPLE_600,
-                            color=ft.colors.WHITE,
+                            bgcolor=ft.Colors.PURPLE_600,
+                            color=ft.Colors.WHITE,
                         ),
                         on_click=save_t,
                     ),
@@ -1354,14 +2099,14 @@ def main(page: ft.Page):
 
             content_container.controls.append(ft.Container(height=20))
             content_container.controls.append(
-                ft.Divider(height=1, color=ft.colors.GREY_800)
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
             )
 
             filter_dd = ft.Dropdown(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Lọc",
                 options=[
                     ft.dropdown.Option("All"),
@@ -1380,29 +2125,31 @@ def main(page: ft.Page):
             )
             content_container.controls.append(row_hist)
 
-            history_list = ft.Column(spacing=10)
+            history_list = ft.ListView(
+                expand=True, spacing=10, scroll=ft.ScrollMode.ALWAYS
+            )
             txs = db.get_recent_transactions(15, filter_type)
             if not txs:
                 history_list.controls.append(
-                    ft.Text("Chưa có giao dịch nào.", color=ft.colors.GREY_500)
+                    ft.Text("Chưa có giao dịch nào.", color=ft.Colors.GREY_500)
                 )
             else:
                 for tx in txs:
                     icon = (
-                        ft.icons.ARROW_DOWNWARD
+                        ft.Icons.ARROW_DOWNWARD
                         if tx["transaction_type"] == "expense"
-                        else ft.icons.ARROW_UPWARD
+                        else ft.Icons.ARROW_UPWARD
                     )
                     bgcolor = (
-                        ft.colors.RED_500
+                        ft.Colors.RED_500
                         if tx["transaction_type"] == "expense"
-                        else ft.colors.GREEN_500
+                        else ft.Colors.GREEN_500
                     )
                     history_list.controls.append(
                         ft.Container(
                             padding=10,
                             border_radius=10,
-                            bgcolor=ft.colors.with_opacity(0.02, ft.colors.ON_SURFACE),
+                            bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ON_SURFACE),
                             content=ft.ListTile(
                                 leading=ft.Icon(icon, color=color),
                                 title=ft.Text(
@@ -1430,7 +2177,7 @@ def main(page: ft.Page):
             content_container.controls.append(
                 ft.Text(
                     f"LỖI RỒI ÔNG GIÁO ƠI:\n{str(e)}\n\n{traceback.format_exc()}",
-                    bgcolor=ft.colors.RED_500,
+                    bgcolor=ft.Colors.RED_500,
                     selectable=True,
                 )
             )
@@ -1445,45 +2192,124 @@ def main(page: ft.Page):
                         "Focus Space",
                         size=24,
                         weight=ft.FontWeight.W_600,
-                        color=ft.colors.PURPLE_400,
+                        color=ft.Colors.PURPLE_400,
                     ),
-                    margin=ft.margin.only(top=20),
+                    margin=ft.Margin(0, 20, 0, 0),
                 )
             )
 
             content_container.controls.append(focus_manager.pomodoro_card)
             content_container.controls.append(
-                ft.Divider(height=1, color=ft.colors.GREY_800)
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
             )
 
-            # --- Random Quote ---
+            # --- 🎵 STRICT MODE MUSIC PLAYER ---
+            def toggle_music(e):
+                if bg_music is None:
+                    return
+                if e.control.icon == ft.Icons.PLAY_CIRCLE_FILLED:
+                    bg_music.play()
+                    e.control.icon = ft.Icons.PAUSE_CIRCLE_FILLED
+                else:
+                    bg_music.pause()
+                    e.control.icon = ft.Icons.PLAY_CIRCLE_FILLED
+                e.control.update()
+
+            music_controls = ft.Column(
+                [
+                    ft.Text(
+                        "🎧 Focus Music Station",
+                        size=18,
+                        weight="bold",
+                        color=ft.Colors.PURPLE_400,
+                    ),
+                    ft.Row(
+                        [
+                            ft.IconButton(
+                                icon=ft.Icons.LIBRARY_MUSIC,
+                                on_click=lambda _: audio_picker.pick_files(
+                                    allow_multiple=False,
+                                    allowed_extensions=["mp3", "wav"],
+                                ),
+                                tooltip="Chọn bài nhạc",
+                                icon_color=ft.Colors.PURPLE_300,
+                                disabled=not is_mobile,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.PLAY_CIRCLE_FILLED,
+                                on_click=toggle_music,
+                                icon_size=35,
+                                icon_color=ft.Colors.PURPLE_ACCENT,
+                                disabled=not is_mobile,
+                            ),
+                            ft.Slider(
+                                min=0,
+                                max=1,
+                                value=0.5,
+                                on_change=lambda e: (
+                                    (
+                                        setattr(
+                                            bg_music, "volume", float(e.control.value)
+                                        )
+                                        or bg_music.update()
+                                    )
+                                    if bg_music
+                                    else None
+                                ),
+                                expand=True,
+                                disabled=not is_mobile,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    ),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=10,
+            )
+
+            if not is_mobile:
+                music_controls.controls.append(
+                    ft.Text(
+                        "🎵 Tính năng nhạc nền chỉ có sẵn trên Điện thoại",
+                        color=ft.Colors.RED_400,
+                        size=12,
+                        italic=True,
+                    )
+                )
+
+            music_player = ft.Container(
+                bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.PURPLE),
+                border_radius=15,
+                padding=15,
+                content=music_controls,
+            )
+            content_container.controls.append(music_player)
+            content_container.controls.append(
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
+            )
+
+            # --- Random Quote (merged: static + DB) ---
             quotes_data = db.get_all_quotes()
+            all_quotes = list(QUOTES_LIST) + list(HUST_QUOTES)
+            for q in quotes_data:
+                all_quotes.append(f'"{q["text"]}" — {q["author"]}')
+
             quote_card = ft.Container(
-                bgcolor=ft.colors.with_opacity(0.05, ft.colors.ON_SURFACE),
+                bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.ON_SURFACE),
                 padding=15,
                 border_radius=15,
-                margin=ft.margin.only(bottom=20),
+                margin=ft.Margin(0, 0, 0, 20),
             )
-            if quotes_data:
-                q = random.choice(quotes_data)
-                quote_card.content = ft.Column(
-                    [
-                        ft.Text(
-                            f'💡 "{q["text"]}"',
-                            weight=ft.FontWeight.W_600,
-                            color=ft.colors.INDIGO_700,
-                        ),
-                        ft.Text(
-                            f" — {q['author']}",
-                            italic=True,
-                            size=12,
-                            color=ft.colors.GREY_700,
-                        ),
-                    ]
+            if all_quotes:
+                chosen = random.choice(all_quotes)
+                quote_card.content = ft.Text(
+                    f"💡 {chosen}",
+                    weight=ft.FontWeight.W_600,
+                    color=ft.Colors.INDIGO_700,
                 )
             else:
                 quote_card.content = ft.Text(
-                    "💡 Trạm Quotes đang trống...", color=ft.colors.INDIGO_700
+                    "💡 Trạm Quotes đang trống...", color=ft.Colors.INDIGO_700
                 )
             content_container.controls.append(quote_card)
 
@@ -1492,34 +2318,34 @@ def main(page: ft.Page):
 
             today_dt = dt.date.today()
 
-            empty_c = ft.colors.with_opacity(0.1, ft.colors.WHITE)
+            empty_c = ft.Colors.with_opacity(0.1, ft.Colors.WHITE)
 
             def get_intensity_green(ratio):
                 if ratio <= 0:
                     return empty_c
                 if ratio < 0.3:
-                    return ft.colors.GREEN_200
+                    return ft.Colors.GREEN_200
                 if ratio < 0.6:
-                    return ft.colors.GREEN_400
-                return ft.colors.GREEN_700
+                    return ft.Colors.GREEN_400
+                return ft.Colors.GREEN_700
 
             def get_intensity_blue(count):
                 if count <= 0:
                     return empty_c
                 if count < 2:
-                    return ft.colors.BLUE_200
+                    return ft.Colors.BLUE_200
                 if count < 4:
-                    return ft.colors.BLUE_400
-                return ft.colors.BLUE_700
+                    return ft.Colors.BLUE_400
+                return ft.Colors.BLUE_700
 
             def get_intensity_purple(seconds):
                 if seconds <= 0:
                     return empty_c
                 if seconds < 1500:
-                    return ft.colors.PURPLE_200
+                    return ft.Colors.PURPLE_200
                 if seconds < 3600:
-                    return ft.colors.PURPLE_400
-                return ft.colors.PURPLE_700
+                    return ft.Colors.PURPLE_400
+                return ft.Colors.PURPLE_700
 
             heatmap_row = ft.Row(
                 wrap=True,
@@ -1563,7 +2389,7 @@ def main(page: ft.Page):
                 heatmap_row.controls.append(chart)
 
             heatmap_card = ft.Card(
-                color=ft.colors.with_opacity(0.15, ft.colors.WHITE),
+                bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE),
                 elevation=0,
                 content=ft.Container(
                     padding=20,
@@ -1583,7 +2409,7 @@ def main(page: ft.Page):
             )
             content_container.controls.append(heatmap_card)
             content_container.controls.append(
-                ft.Divider(height=1, color=ft.colors.GREY_800)
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
             )
 
             # --- Quote Collection ---
@@ -1593,16 +2419,16 @@ def main(page: ft.Page):
             q_text = ft.TextField(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Câu nói tâm đắc",
                 multiline=True,
             )
             q_author = ft.TextField(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Tác giả",
             )
 
@@ -1616,25 +2442,27 @@ def main(page: ft.Page):
                 [
                     q_text,
                     q_author,
-                    ft.ElevatedButton(
+                    ft.Button(
                         "Lưu Quote",
                         style=ft.ButtonStyle(
                             shape=ft.RoundedRectangleBorder(radius=10),
-                            bgcolor=ft.colors.PURPLE_600,
-                            color=ft.colors.WHITE,
+                            bgcolor=ft.Colors.PURPLE_600,
+                            color=ft.Colors.WHITE,
                         ),
                         on_click=save_q,
                     ),
                 ]
             )
             content_container.controls.append(
-                ft.Divider(height=1, color=ft.colors.GREY_800)
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
             )
             content_container.controls.append(
                 ft.Text("📚 Bộ sưu tập Quote", size=18, weight=ft.FontWeight.W_600)
             )
 
-            quote_list = ft.Column(spacing=10)
+            quote_list = ft.ListView(
+                expand=True, spacing=10, scroll=ft.ScrollMode.ALWAYS
+            )
             for q in quotes_data:
 
                 def del_q(e, qid=q["id"]):
@@ -1652,20 +2480,20 @@ def main(page: ft.Page):
                                         ft.Text(
                                             f"— {q['author']}",
                                             size=12,
-                                            color=ft.colors.GREY_600,
+                                            color=ft.Colors.GREY_600,
                                         ),
                                     ],
                                     expand=True,
                                 ),
                                 ft.IconButton(
-                                    ft.icons.DELETE_OUTLINE,
-                                    icon_color=ft.colors.RED_300,
+                                    ft.Icons.DELETE_OUTLINE,
+                                    icon_color=ft.Colors.RED_300,
                                     on_click=del_q,
                                 ),
                             ]
                         ),
                         padding=10,
-                        border=ft.border.all(1, ft.colors.GREY_200),
+                        border=ft.Border.all(1, ft.Colors.GREY_200),
                         border_radius=5,
                     )
                 )
@@ -1679,23 +2507,122 @@ def main(page: ft.Page):
             content_container.controls.append(
                 ft.Text(
                     f"LỖI RỒI ÔNG GIÁO ƠI:\n{str(e)}\n\n{traceback.format_exc()}",
-                    bgcolor=ft.colors.RED_500,
+                    bgcolor=ft.Colors.RED_500,
                     selectable=True,
                 )
             )
             page.update()
 
-    def render_settings():
+    def render_explore():
         try:
             content_container.controls.clear()
+
+            # --- BUILDER MODE TOGGLE ---
+            def on_builder_toggle(e):
+                page.session.store.set("builder_mode", e.control.value)
+                page.update()
+
+            content_container.controls.append(
+                ft.Container(
+                    padding=10,
+                    content=ft.Switch(
+                        label="Chế độ Kiến Tạo (Builder Mode)",
+                        value=page.session.store.get("builder_mode") or False,
+                        on_change=on_builder_toggle,
+                        active_color=ft.Colors.PURPLE_ACCENT,
+                    ),
+                )
+            )
+
+            # --- ☯️ I CHING DAILY FOCUS ---
+            hexagram_result = ft.Column(
+                visible=False,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
+            )
+
+            def gieo_que(e):
+                q = random.choice(I_CHING_HEXAGRAMS)
+                hexagram_result.controls.clear()
+                hexagram_result.controls.extend(
+                    [
+                        ft.Text(q["symbol"], size=60),
+                        ft.Text(
+                            q["name"],
+                            size=22,
+                            weight="bold",
+                            color=ft.Colors.PURPLE_200,
+                        ),
+                        ft.Container(
+                            padding=15,
+                            border_radius=10,
+                            bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
+                            content=ft.Text(
+                                q["advice"],
+                                size=15,
+                                text_align=ft.TextAlign.CENTER,
+                                color=ft.Colors.WHITE,
+                            ),
+                        ),
+                    ]
+                )
+                hexagram_result.visible = True
+                page.update()
+
+            iching_card = ft.Card(
+                elevation=0,
+                bgcolor=ft.Colors.TRANSPARENT,
+                content=ft.Container(
+                    bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.PURPLE_700),
+                    border_radius=15,
+                    padding=20,
+                    content=ft.Column(
+                        [
+                            ft.Text(
+                                "☯️ Gieo Quẻ Khởi Ngày",
+                                size=22,
+                                weight="bold",
+                                color=ft.Colors.PURPLE_300,
+                            ),
+                            ft.Text(
+                                "Gieo quẻ Kinh Dịch để nhận lời nhắn cho ngày học tập",
+                                size=12,
+                                color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE),
+                            ),
+                            ft.Container(height=10),
+                            hexagram_result,
+                            ft.Container(height=10),
+                            ft.Button(
+                                "Gieo Quẻ (Lập Quẻ)",
+                                icon=ft.Icons.AUTO_AWESOME,
+                                style=ft.ButtonStyle(
+                                    shape=ft.RoundedRectangleBorder(radius=10),
+                                    bgcolor=ft.Colors.PURPLE_700,
+                                    color=ft.Colors.WHITE,
+                                ),
+                                on_click=gieo_que,
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=8,
+                    ),
+                ),
+            )
+            content_container.controls.append(iching_card)
+            content_container.controls.append(ft.Container(height=20))
+            content_container.controls.append(
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
+            )
+
+            # --- ⚙️ SETTINGS (inline) ---
             content_container.controls.append(
                 ft.Text("⚙️ Cài đặt hệ thống", size=20, weight=ft.FontWeight.W_600)
             )
             theme_dd = ft.Dropdown(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Giao diện",
                 options=[
                     ft.dropdown.Option("light", "Sáng ☀️"),
@@ -1706,8 +2633,8 @@ def main(page: ft.Page):
             curr_dd = ft.Dropdown(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Đơn vị tiền tệ",
                 options=[
                     ft.dropdown.Option("VNĐ"),
@@ -1719,8 +2646,8 @@ def main(page: ft.Page):
             budget_input = ft.TextField(
                 border_radius=10,
                 filled=True,
-                border_color=ft.colors.TRANSPARENT,
-                focused_border_color=ft.colors.PURPLE_400,
+                border_color=ft.Colors.TRANSPARENT,
+                focused_border_color=ft.Colors.PURPLE_400,
                 label="Ngân sách mục tiêu (VNĐ)",
                 value=str(int(settings["monthly_budget"])),
                 text_align=ft.TextAlign.RIGHT,
@@ -1739,7 +2666,7 @@ def main(page: ft.Page):
                     1 if pomo_switch.value else 0,
                 )
                 refresh_settings()
-                render_settings()
+                render_explore()
                 page.update()
                 page.snack_bar = ft.SnackBar(ft.Text("Đã lưu cài đặt!"))
                 page.snack_bar.open = True
@@ -1753,22 +2680,21 @@ def main(page: ft.Page):
 
                     reset_dialog.open = False
                     page.snack_bar = ft.SnackBar(
-                        ft.Text("Đã dọn dẹp sạch sẽ!"), bgcolor=ft.colors.GREEN_700
+                        ft.Text("Đã dọn dẹp sạch sẽ!"), bgcolor=ft.Colors.GREEN_700
                     )
                     page.snack_bar.open = True
 
-                    bot_text.value = "Studygram Bot: Đã dọn sạch lỗi rồi ông giáo! Vào Tab Focus 'trồng cây' thử xem có bị văng nữa không nhé! 😎"
-                    try:
-                        bot_text.update()
-                    except:
-                        pass
-
                     page.update()
                     refresh_settings()
-                    render_settings()
+                    render_explore()
 
                 def cancel_reset(ex):
                     reset_dialog.open = False
+                    page.update()
+
+                def on_reset_dismiss(ex):
+                    if reset_dialog in page.overlay:
+                        page.overlay.remove(reset_dialog)
                     page.update()
 
                 reset_dialog = ft.AlertDialog(
@@ -1776,29 +2702,30 @@ def main(page: ft.Page):
                     content=ft.Text("Xóa là mất trắng nhé ông giáo! Nghĩ kỹ chưa?"),
                     actions=[
                         ft.TextButton("Khỏi, sợ rồi", on_click=cancel_reset),
-                        ft.ElevatedButton(
+                        ft.Button(
                             "Xóa sập nguồn!",
                             style=ft.ButtonStyle(
                                 shape=ft.RoundedRectangleBorder(radius=10),
-                                bgcolor=ft.colors.PURPLE_600,
-                                color=ft.colors.WHITE,
+                                bgcolor=ft.Colors.PURPLE_600,
+                                color=ft.Colors.WHITE,
                             ),
                             on_click=do_reset,
                         ),
                     ],
+                    on_dismiss=on_reset_dismiss,
                 )
                 page.overlay.append(reset_dialog)
                 reset_dialog.open = True
                 page.update()
 
-            reset_btn = ft.ElevatedButton(
+            reset_btn = ft.Button(
                 "Hard Reset Data",
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=10),
-                    bgcolor=ft.colors.PURPLE_600,
-                    color=ft.colors.WHITE,
+                    bgcolor=ft.Colors.PURPLE_600,
+                    color=ft.Colors.WHITE,
                 ),
-                icon=ft.icons.WARNING,
+                icon=ft.Icons.WARNING,
                 on_click=confirm_hard_reset,
             )
 
@@ -1808,14 +2735,14 @@ def main(page: ft.Page):
                     curr_dd,
                     budget_input,
                     pomo_switch,
-                    ft.ElevatedButton(
+                    ft.Button(
                         "Lưu tất cả",
                         style=ft.ButtonStyle(
                             shape=ft.RoundedRectangleBorder(radius=10),
-                            bgcolor=ft.colors.PURPLE_600,
-                            color=ft.colors.WHITE,
+                            bgcolor=ft.Colors.PURPLE_600,
+                            color=ft.Colors.WHITE,
                         ),
-                        icon=ft.icons.SAVE,
+                        icon=ft.Icons.SAVE,
                         on_click=save_settings,
                     ),
                 ]
@@ -1824,7 +2751,7 @@ def main(page: ft.Page):
             # --- Sound & Notifications ---
             content_container.controls.append(ft.Container(height=20))
             content_container.controls.append(
-                ft.Divider(height=1, color=ft.colors.GREY_800)
+                ft.Divider(height=1, color=ft.Colors.GREY_800)
             )
             content_container.controls.append(
                 ft.Text("🔊 Âm thanh & Thông báo", size=18, weight=ft.FontWeight.W_600)
@@ -1842,9 +2769,9 @@ def main(page: ft.Page):
                 page.snack_bar = ft.SnackBar(
                     ft.Text(
                         "Đã tắt tiếng! 🔇" if val else "Đã bật tiếng! 🔊",
-                        color=ft.colors.WHITE,
+                        color=ft.Colors.WHITE,
                     ),
-                    bgcolor=ft.colors.PURPLE_700,
+                    bgcolor=ft.Colors.PURPLE_700,
                 )
                 page.snack_bar.open = True
                 page.update()
@@ -1859,31 +2786,87 @@ def main(page: ft.Page):
                 snd_settings.get("break_start_path", "break_start.mp3")
             )
 
-            def pick_focus_sound(e):
-                target_sound_key_ref[0] = "focus_start_path"
-                sound_file_picker.pick_files(
-                    allow_multiple=False, allowed_extensions=["mp3", "wav"]
+            def on_sound_dismiss(ex):
+                if sound_dialog in page.overlay:
+                    page.overlay.remove(sound_dialog)
+                page.update()
+
+            def _open_sound_dialog(target_key, current_display):
+                path_input = ft.TextField(
+                    label="Đường dẫn file âm thanh (.mp3, .wav)",
+                    hint_text="VD: C:/Music/my_sound.mp3",
+                    border_radius=10,
+                    filled=True,
+                    expand=True,
                 )
 
-            def pick_break_sound(e):
-                target_sound_key_ref[0] = "break_start_path"
-                sound_file_picker.pick_files(
-                    allow_multiple=False, allowed_extensions=["mp3", "wav"]
+                def on_save(ex):
+                    _apply_custom_sound(target_key, path_input.value or "")
+                    sound_dialog.open = False
+                    page.update()
+                    render_explore()
+
+                def on_cancel(ex):
+                    sound_dialog.open = False
+                    page.update()
+
+                sound_dialog = ft.AlertDialog(
+                    title=ft.Text("🔊 Đổi âm thanh"),
+                    content=ft.Column(
+                        [
+                            ft.Text(
+                                f"Hiện tại: {current_display}",
+                                size=12,
+                                color=ft.Colors.GREY_500,
+                            ),
+                            path_input,
+                            ft.Text(
+                                "Dán đường dẫn tuyệt đối đến file .mp3 hoặc .wav",
+                                size=11,
+                                italic=True,
+                                color=ft.Colors.GREY_500,
+                            ),
+                        ],
+                        tight=True,
+                        spacing=10,
+                    ),
+                    actions=[
+                        ft.TextButton("Hủy", on_click=on_cancel),
+                        ft.Button(
+                            "Nạp âm thanh",
+                            style=ft.ButtonStyle(
+                                shape=ft.RoundedRectangleBorder(radius=10),
+                                bgcolor=ft.Colors.PURPLE_600,
+                                color=ft.Colors.WHITE,
+                            ),
+                            on_click=on_save,
+                        ),
+                    ],
+                    on_dismiss=on_sound_dismiss,
                 )
+                page.overlay.append(sound_dialog)
+                sound_dialog.open = True
+                page.update()
+
+            def pick_focus_sound(e):
+                _open_sound_dialog("focus_start_path", focus_path_display)
+
+            def pick_break_sound(e):
+                _open_sound_dialog("break_start_path", break_path_display)
 
             content_container.controls.append(
                 ft.ListTile(
-                    leading=ft.Icon(ft.icons.PLAY_CIRCLE, color=ft.colors.PURPLE_400),
+                    leading=ft.Icon(ft.Icons.PLAY_CIRCLE, color=ft.Colors.PURPLE_400),
                     title=ft.Text("Âm thanh bắt đầu"),
                     subtitle=ft.Text(
-                        focus_path_display, size=12, color=ft.colors.GREY_500
+                        focus_path_display, size=12, color=ft.Colors.GREY_500
                     ),
-                    trailing=ft.ElevatedButton(
+                    trailing=ft.Button(
                         "Đổi",
                         style=ft.ButtonStyle(
                             shape=ft.RoundedRectangleBorder(radius=10),
-                            bgcolor=ft.colors.PURPLE_600,
-                            color=ft.colors.WHITE,
+                            bgcolor=ft.Colors.PURPLE_600,
+                            color=ft.Colors.WHITE,
                         ),
                         on_click=pick_focus_sound,
                     ),
@@ -1891,19 +2874,134 @@ def main(page: ft.Page):
             )
             content_container.controls.append(
                 ft.ListTile(
-                    leading=ft.Icon(ft.icons.FREE_BREAKFAST, color=ft.colors.GREEN_400),
+                    leading=ft.Icon(ft.Icons.FREE_BREAKFAST, color=ft.Colors.GREEN_400),
                     title=ft.Text("Âm thanh nghỉ ngơi"),
                     subtitle=ft.Text(
-                        break_path_display, size=12, color=ft.colors.GREY_500
+                        break_path_display, size=12, color=ft.Colors.GREY_500
                     ),
-                    trailing=ft.ElevatedButton(
+                    trailing=ft.Button(
                         "Đổi",
                         style=ft.ButtonStyle(
                             shape=ft.RoundedRectangleBorder(radius=10),
-                            bgcolor=ft.colors.PURPLE_600,
-                            color=ft.colors.WHITE,
+                            bgcolor=ft.Colors.PURPLE_600,
+                            color=ft.Colors.WHITE,
                         ),
                         on_click=pick_break_sound,
+                    ),
+                )
+            )
+
+            # --- 🛠 QUẢN LÝ DỮ LIỆU ---
+            def handle_csv_import(e):
+                if is_mobile and csv_picker is not None:
+                    # Chạy mượt trên điện thoại
+                    csv_picker.pick_files(
+                        allow_multiple=False, allowed_extensions=["csv"]
+                    )
+                else:
+                    # Bị lỗi trên Windows -> Hiện bảng nhập đường dẫn như âm thanh
+                    path_input = ft.TextField(
+                        label="Đường dẫn file CSV tuyệt đối",
+                        hint_text="VD: C:/Downloads/template.csv",
+                        border_radius=10,
+                        filled=True,
+                        expand=True,
+                    )
+
+                    def on_dialog_save(ex):
+                        import os
+
+                        path = path_input.value.strip()
+                        if path and os.path.isfile(path):
+                            process_csv_file(path)  # Đã viết ở trên cùng
+                            csv_dialog.open = False
+                            page.update()
+                        else:
+                            page.snack_bar = ft.SnackBar(
+                                ft.Text("Không tìm thấy file!", color=ft.Colors.WHITE),
+                                bgcolor=ft.Colors.RED_700,
+                            )
+                            page.snack_bar.open = True
+                            page.update()
+
+                    def on_dialog_cancel(ex):
+                        csv_dialog.open = False
+                        page.update()
+
+                    def on_dialog_dismiss(ex):
+                        if csv_dialog in page.overlay:
+                            page.overlay.remove(csv_dialog)
+                        page.update()
+
+                    csv_dialog = ft.AlertDialog(
+                        title=ft.Text("📥 Nhập CSV (Chế độ Windows)"),
+                        content=ft.Column(
+                            [
+                                path_input,
+                                ft.Text(
+                                    "Dán đường dẫn trực tiếp do Flet FilePicker bị lỗi trên Windows.",
+                                    size=12,
+                                    italic=True,
+                                ),
+                            ],
+                            tight=True,
+                        ),
+                        actions=[
+                            ft.TextButton("Hủy", on_click=on_dialog_cancel),
+                            ft.Button(
+                                "Nạp dữ liệu",
+                                bgcolor=ft.Colors.PURPLE_600,
+                                color=ft.Colors.WHITE,
+                                on_click=on_dialog_save,
+                            ),
+                        ],
+                        on_dismiss=on_dialog_dismiss,  # <<< Gắn thêm cỗ máy dọn rác vào đây
+                    )
+
+                    page.overlay.append(csv_dialog)
+                    csv_dialog.open = True
+                    page.update()
+
+            content_container.controls.append(ft.Container(height=20))
+            content_container.controls.append(
+                ft.Card(
+                    bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.PURPLE_700),
+                    content=ft.Container(
+                        padding=15,
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Icon(
+                                            ft.Icons.STORAGE, color=ft.Colors.PURPLE_300
+                                        ),
+                                        ft.Text(
+                                            "🛠 Quản lý Dữ liệu",
+                                            size=18,
+                                            weight="bold",
+                                            color=ft.Colors.PURPLE_200,
+                                        ),
+                                    ],
+                                    spacing=10,
+                                ),
+                                ft.Text(
+                                    "Sao lưu và nhập liệu hệ thống",
+                                    size=12,
+                                    color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE),
+                                ),
+                                ft.Container(height=10),
+                                ft.Button(
+                                    "Nhập dữ liệu từ CSV template",
+                                    icon=ft.Icons.UPLOAD_FILE,
+                                    style=ft.ButtonStyle(
+                                        shape=ft.RoundedRectangleBorder(radius=10),
+                                        bgcolor=ft.Colors.PURPLE_800,
+                                        color=ft.Colors.WHITE,
+                                    ),
+                                    on_click=handle_csv_import,
+                                ),
+                            ]
+                        ),
                     ),
                 )
             )
@@ -1919,7 +3017,7 @@ def main(page: ft.Page):
             content_container.controls.append(
                 ft.Text(
                     f"LỖI RỒI ÔNG GIÁO ƠI:\n{str(e)}\n\n{traceback.format_exc()}",
-                    bgcolor=ft.colors.RED_500,
+                    bgcolor=ft.Colors.RED_500,
                     selectable=True,
                 )
             )
@@ -1930,13 +3028,13 @@ def main(page: ft.Page):
     main_wrapper = ft.Container(
         content=content_container,
         border_radius=15,
-        bgcolor=ft.colors.TRANSPARENT,
+        bgcolor=ft.Colors.TRANSPARENT,
         padding=10,
         expand=True,
     )
-    render_habits()
-    page.add(main_wrapper)
+    render_focus()
+    page.add(ft.SafeArea(main_wrapper, expand=True))
     page.update()
 
 
-ft.app(target=main)
+ft.run(main)

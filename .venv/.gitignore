@@ -1,0 +1,16 @@
+# Môi trường và cache
+.venv/
+__pycache__/
+
+# Thư mục build
+build/
+
+# Các file log
+*.log
+err.txt
+
+# Database cục bộ
+app_data.db
+
+# Cấu hình VS Code
+.vscode/
