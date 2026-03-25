@@ -177,9 +177,13 @@ class FocusManager:
         # Fetch XP/Level
         try:
             current_xp, current_level = db.get_xp_level()
+            needs_breakthrough = db.get_needs_breakthrough()
+            rank_name = db.get_cultivation_rank(current_level)
             species_emoji = db.get_species_emoji(current_level)
         except:
             current_xp, current_level, species_emoji = 0, 1, "🌱"
+            needs_breakthrough = 0
+            rank_name = "Luyện Khí I"
 
         # Header
         header = ft.Text(
@@ -264,24 +268,35 @@ class FocusManager:
         # Tree Link XP displays
         self.tree_emoji_text = ft.Text(species_emoji, size=22)
         self.level_text = ft.Text(
-            f"Level {current_level}",
+            rank_name + (" (Đỉnh Phong)" if needs_breakthrough else ""),
             size=13,
             weight="bold",
             color=ft.Colors.WHITE,
         )
         self.xp_text = ft.Text(
-            f"{current_xp}/500 XP",
+            "Cần Đột Phá!" if needs_breakthrough else f"{current_xp}/{current_level*500} XP",
             size=10,
             color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
         )
 
         self.tree_xp_bar = ft.ProgressBar(
-            value=current_xp / 500,
-            color=C_TER,
+            value=1.0 if needs_breakthrough else (current_xp / (current_level*500) if current_level > 0 else 0),
+            color=ft.Colors.RED_400 if needs_breakthrough else C_TER,
             bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
             height=5,
             border_radius=3,
         )
+        
+        self.btn_breakthrough = ft.ElevatedButton(
+            "ĐỘT PHÁ",
+            color=ft.Colors.WHITE,
+            bgcolor=ft.Colors.RED_700,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=4)),
+            height=25,
+            on_click=self.on_breakthrough_click,
+            visible=bool(needs_breakthrough)
+        )
+
         tree_link_row = ft.Container(
             padding=ft.padding.symmetric(horizontal=15, vertical=10),
             border_radius=15,
@@ -291,7 +306,7 @@ class FocusManager:
                     self.tree_emoji_text,
                     ft.Column(
                         [
-                            self.level_text,
+                            ft.Row([self.level_text, self.btn_breakthrough], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                             self.tree_xp_bar,
                             self.xp_text,
                         ],
@@ -463,6 +478,34 @@ class FocusManager:
                         self.mode = "rest"
                         self.time_left = max(1, int(self.total_time / 5))
                         self.total_time = self.time_left
+                        
+                        # Hiển thị Mood Tracker
+                        def on_mood_click(ev):
+                            try:
+                                db.log_mood(ev.control.text)
+                            except Exception: pass
+                            mood_sheet.open = False
+                            self.page.update()
+
+                        mood_row = ft.Row([
+                            ft.TextButton("🔥", on_click=on_mood_click, style=ft.ButtonStyle(padding=20)),
+                            ft.TextButton("🧘", on_click=on_mood_click, style=ft.ButtonStyle(padding=20)),
+                            ft.TextButton("🥱", on_click=on_mood_click, style=ft.ButtonStyle(padding=20)),
+                            ft.TextButton("😵‍💫", on_click=on_mood_click, style=ft.ButtonStyle(padding=20)),
+                            ft.TextButton("😴", on_click=on_mood_click, style=ft.ButtonStyle(padding=20)),
+                        ], alignment=ft.MainAxisAlignment.CENTER)
+                        
+                        mood_sheet = ft.BottomSheet(
+                            content=ft.Container(
+                                padding=20,
+                                content=ft.Column([
+                                    ft.Text("Tâm trạng của đạo hữu lúc này?", size=18, weight="bold", color=ft.Colors.PURPLE_400),
+                                    mood_row
+                                ], tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+                            )
+                        )
+                        self.page.overlay.append(mood_sheet)
+                        mood_sheet.open = True
 
                         # Play break sound
                         try:
@@ -622,18 +665,42 @@ class FocusManager:
         except Exception as e:
             print(f"Reload sounds error: {e}")
 
+    def on_breakthrough_click(self, e):
+        try:
+            success, msg = db.check_breakthrough_requirement()
+            if success:
+                self.page.snack_bar = ft.SnackBar(ft.Text(msg, color=ft.Colors.WHITE, weight="bold"), bgcolor=ft.Colors.GREEN_700)
+                self.sync_xp()
+                self.update_ui()
+            else:
+                self.page.snack_bar = ft.SnackBar(ft.Text(msg, color=ft.Colors.WHITE), bgcolor=ft.Colors.RED_700)
+            self.page.snack_bar.open = True
+            self.page.update()
+        except Exception as ex:
+            print("Breakthrough error:", ex)
+
     def sync_xp(self):
         """Fetch latest XP and Level from DB and update the Focus UI."""
         try:
             current_xp, current_level = db.get_xp_level()
+            needs_breakthrough = db.get_needs_breakthrough()
+            rank_name = db.get_cultivation_rank(current_level)
             xp_needed = current_level * 500
             emoji = db.get_species_emoji(current_level)
 
-            self.tree_xp_bar.value = (
-                min(1.0, current_xp / xp_needed) if xp_needed > 0 else 0
-            )
-            self.level_text.value = f"Level {current_level}"
-            self.xp_text.value = f"{current_xp}/{xp_needed} XP"
+            if needs_breakthrough:
+                self.tree_xp_bar.color = ft.Colors.RED_400
+                self.tree_xp_bar.value = 1.0
+                self.level_text.value = f"{rank_name} (Đỉnh Phong)"
+                self.xp_text.value = "Cần Đột Phá!"
+                self.btn_breakthrough.visible = True
+            else:
+                self.tree_xp_bar.color = "#F472B6"
+                self.tree_xp_bar.value = min(1.0, current_xp / xp_needed) if xp_needed > 0 else 0
+                self.level_text.value = rank_name
+                self.xp_text.value = f"{current_xp}/{xp_needed} XP"
+                self.btn_breakthrough.visible = False
+
             self.tree_emoji_text.value = emoji
             self.main_emoji.value = emoji
             self.overlay_emoji.value = emoji
@@ -641,11 +708,12 @@ class FocusManager:
             self.tree_xp_bar.update()
             self.level_text.update()
             self.xp_text.update()
+            self.btn_breakthrough.update()
             self.tree_emoji_text.update()
             self.main_emoji.update()
             self.overlay_emoji.update()
-        except:
-            pass
+        except Exception as ex:
+            print("sync_xp error:", ex)
 
 
 def _seed_dummy_icpc_tree():
@@ -2505,6 +2573,24 @@ def main(page: ft.Page):
                     "💡 Trạm Quotes đang trống...", color=ft.Colors.INDIGO_700
                 )
             content_container.controls.append(quote_card)
+
+            # --- Peak Focus Hour Card ---
+            try:
+                peak_hour = db.get_peak_focus_hour()
+                peak_card = ft.Card(
+                    bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.AMBER_400),
+                    content=ft.Container(
+                        padding=15,
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.SCHEDULE, color=ft.Colors.AMBER_600),
+                            ft.Text(f"Giờ vàng tập trung: {peak_hour} (Lúc đại não minh mẫn nhất!)", 
+                                    color=ft.Colors.WHITE, size=14, weight="bold")
+                        ])
+                    )
+                )
+                content_container.controls.append(peak_card)
+            except Exception:
+                pass
 
             # --- 30-Day Heatmap ---
             import datetime as dt

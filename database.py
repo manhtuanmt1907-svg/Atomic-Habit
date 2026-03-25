@@ -119,6 +119,10 @@ def init_db():
         cursor.execute(
             "ALTER TABLE user_settings ADD COLUMN current_level INTEGER DEFAULT 1"
         )
+    if "needs_breakthrough" not in cols:
+        cursor.execute(
+            "ALTER TABLE user_settings ADD COLUMN needs_breakthrough INTEGER DEFAULT 0"
+        )
 
     cursor.execute("SELECT COUNT(*) FROM user_settings")
     if cursor.fetchone()[0] == 0:
@@ -155,6 +159,22 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             log_date TEXT,
             focus_seconds INTEGER
+        )
+    """)
+    cursor.execute("PRAGMA table_info(focus_logs)")
+    cols = [row["name"] for row in cursor.fetchall()]
+    if "created_at" not in cols:
+        try:
+            cursor.execute("ALTER TABLE focus_logs ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        except sqlite3.OperationalError:
+            pass
+
+    # Mood logs table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS mood_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mood_emoji TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -694,15 +714,33 @@ def get_xp_level():
     return 0, 1
 
 
+def get_needs_breakthrough():
+    with closing(get_db_connection()) as conn:
+        row = conn.execute("SELECT needs_breakthrough FROM user_settings LIMIT 1").fetchone()
+    return dict(row).get("needs_breakthrough", 0) if row else 0
+
+
 def add_xp(amount):
     xp, level = get_xp_level()
+    needs_breakthrough = get_needs_breakthrough()
+    
+    if needs_breakthrough:
+        return xp, level
+    
     xp += amount
     while xp >= XP_PER_LEVEL:
-        xp -= XP_PER_LEVEL
-        level += 1
+        if level % 10 == 0:
+            xp = XP_PER_LEVEL
+            needs_breakthrough = 1
+            break
+        else:
+            xp -= XP_PER_LEVEL
+            level += 1
+
     with closing(get_db_connection()) as conn:
         conn.execute(
-            "UPDATE user_settings SET current_xp = ?, current_level = ?", (xp, level)
+            "UPDATE user_settings SET current_xp = ?, current_level = ?, needs_breakthrough = ?", 
+            (xp, level, needs_breakthrough)
         )
         conn.commit()
     return xp, level
@@ -724,6 +762,73 @@ def get_species_emoji(level):
     if level >= 10:
         return SPECIES_UNLOCK[10]
     return SPECIES_UNLOCK.get(level, "\U0001f331")
+
+
+def get_cultivation_rank(level):
+    if level <= 10:
+        tiers = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "Viên Mãn"]
+        return f"Luyện Khí {tiers[(level-1)%10]}"
+    ranks = [
+        "Trúc Cơ", "Kim Đan", "Nguyên Anh", "Hóa Thần", "Luyện Hư", "Hợp Thể", "Đại Thừa", "Độ Kiếp"
+    ]
+    rank_idx = (level - 1) // 10 - 1
+    if rank_idx >= len(ranks):
+        return f"Tiên Tôn (Tầng {level})"
+    
+    sub_level = (level - 1) % 10
+    if sub_level < 3:
+        sub = "Sơ Kỳ"
+    elif sub_level < 6:
+        sub = "Trung Kỳ"
+    elif sub_level < 9:
+        sub = "Hậu Kỳ"
+    else:
+        sub = "Viên Mãn"
+    return f"{ranks[rank_idx]} {sub}"
+
+
+def check_breakthrough_requirement():
+    xp, level = get_xp_level()
+    needs_breakthrough = get_needs_breakthrough()
+    if not needs_breakthrough:
+        return False, "Chưa đến lúc độ kiếp!"
+        
+    req_mastered = level // 10
+    with closing(get_db_connection()) as conn:
+        mastered_count = conn.execute("SELECT COUNT(*) FROM user_skills WHERE status = 'mastered'").fetchone()[0]
+        
+        if mastered_count >= req_mastered:
+            new_level = level + 1
+            new_xp = 0
+            conn.execute(
+                "UPDATE user_settings SET current_level = ?, current_xp = ?, needs_breakthrough = 0",
+                (new_level, new_xp)
+            )
+            conn.commit()
+            return True, f"Đột phá thành công! Thăng cấp {get_cultivation_rank(new_level)}"
+        else:
+            return False, f"Đột phá thất bại! Cần {req_mastered} kỹ năng 'Mastered' (Hiện có: {mastered_count})."
+
+
+def log_mood(emoji):
+    with closing(get_db_connection()) as conn:
+        conn.execute("INSERT INTO mood_logs (mood_emoji) VALUES (?)", (emoji,))
+        conn.commit()
+
+
+def get_peak_focus_hour():
+    with closing(get_db_connection()) as conn:
+        row = conn.execute("""
+            SELECT strftime('%H', datetime(created_at, 'localtime')) as hour, COUNT(*) as cnt
+            FROM focus_logs
+            WHERE created_at IS NOT NULL
+            GROUP BY hour
+            ORDER BY cnt DESC
+            LIMIT 1
+        """).fetchone()
+        if row and row["hour"]:
+            return f"{row['hour']}h"
+        return "Chưa đủ dữ liệu"
 
 
 # --- Sound Settings ---
