@@ -3,7 +3,6 @@ import database as db
 from datetime import datetime
 import random
 import flet_audio as fta
-import time
 import shutil
 import os
 
@@ -262,7 +261,20 @@ class FocusManager:
             spacing=30,
         )
 
-        # Tree Link XP bar (compact inline)
+        # Tree Link XP displays
+        self.tree_emoji_text = ft.Text(species_emoji, size=22)
+        self.level_text = ft.Text(
+            f"Level {current_level}",
+            size=13,
+            weight="bold",
+            color=ft.Colors.WHITE,
+        )
+        self.xp_text = ft.Text(
+            f"{current_xp}/500 XP",
+            size=10,
+            color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
+        )
+
         self.tree_xp_bar = ft.ProgressBar(
             value=current_xp / 500,
             color=C_TER,
@@ -276,21 +288,12 @@ class FocusManager:
             bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.WHITE),
             content=ft.Row(
                 [
-                    ft.Text(species_emoji, size=22),
+                    self.tree_emoji_text,
                     ft.Column(
                         [
-                            ft.Text(
-                                f"Level {current_level}",
-                                size=13,
-                                weight="bold",
-                                color=ft.Colors.WHITE,
-                            ),
+                            self.level_text,
                             self.tree_xp_bar,
-                            ft.Text(
-                                f"{current_xp}/500 XP",
-                                size=10,
-                                color=ft.Colors.with_opacity(0.6, ft.Colors.WHITE),
-                            ),
+                            self.xp_text,
                         ],
                         spacing=2,
                         expand=True,
@@ -374,14 +377,12 @@ class FocusManager:
     async def _timer_task(self):
         import asyncio
 
-        # Refresh mute status from DB before playing
+        # Refresh mute status from DB before playing (off-thread)
         try:
-            snd = db.get_sound_settings()
+            snd = await asyncio.to_thread(db.get_sound_settings)
             self.is_muted = bool(snd.get("is_muted", 0))
-        except:
+        except Exception:
             pass
-        if self.audio_focus and not self.is_muted:
-            self.audio_focus.play()
 
         # [CHỐNG DÍNH LUỒNG 4s]
         if getattr(self, "_task_running", False):
@@ -402,47 +403,48 @@ class FocusManager:
 
                 self.pomo_display.value = time_str
                 self.overlay_timer_text.value = time_str
-
                 if self.total_time > 0:
                     self.pomo_progress.value = 1.0 - (self.time_left / self.total_time)
 
-                # Ép Flet cập nhật toàn bộ trang để không bị lỡ nhịp
-                self.page.update()
+                # UPDATE TỪNG CÁI MỘT THAY VÌ UPDATE CẢ PAGE
+                self.pomo_display.update()
+                self.overlay_timer_text.update()
+                if self.total_time > 0:
+                    self.pomo_progress.update()
 
                 # --- XỬ LÝ KHI ĐỒNG HỒ VỀ 00:00 ---
                 if self.time_left <= 0:
                     if self.mode == "work":
-                        # 🌳 CỘNG XP TREE LINK (DB-driven)
+                        # 🌳 CỘNG XP TREE LINK (DB-driven, off-thread)
                         earned_xp = max(10, int(self.total_time / 60) * 10)
 
                         old_level = self.current_level
-                        self.current_xp, self.current_level = db.add_xp(earned_xp)
+                        self.current_xp, self.current_level = await asyncio.to_thread(
+                            db.add_xp, earned_xp
+                        )
 
                         # Check Level Up
                         if self.current_level > old_level:
-                            # Play level up sound
                             try:
-                                if not self.is_muted:
-                                    # Reuse break sound as level-up fanfare
-                                    if self.audio_break:
-                                        self.audio_break.play()
-                            except:
-                                pass
-                            try:
+                                new_emoji = await asyncio.to_thread(
+                                    db.get_species_emoji, self.current_level
+                                )
                                 self.page.snack_bar = ft.SnackBar(
                                     ft.Text(
-                                        f"🎉 LÊN CẤP {self.current_level}! Mở khóa: {db.get_species_emoji(self.current_level)}!",
+                                        f"🎉 LÊN CẤP {self.current_level}! Mở khóa: {new_emoji}!",
                                         color=ft.Colors.WHITE,
                                         weight="bold",
                                     ),
                                     bgcolor=ft.Colors.PINK_600,
                                 )
                                 self.page.snack_bar.open = True
-                            except:
+                            except Exception:
                                 pass
 
-                        # Tiến hóa sinh vật from DB species map
-                        new_emoji = db.get_species_emoji(self.current_level)
+                        # Tiến hóa sinh vật from DB species map (off-thread)
+                        new_emoji = await asyncio.to_thread(
+                            db.get_species_emoji, self.current_level
+                        )
                         self.overlay_emoji.value = new_emoji
                         self.main_emoji.value = new_emoji
 
@@ -454,7 +456,7 @@ class FocusManager:
                                 if xp_needed > 0
                                 else 0
                             )
-                        except:
+                        except Exception:
                             pass
 
                         # Chuyển sang giờ nghỉ
@@ -466,12 +468,12 @@ class FocusManager:
                         try:
                             if self.audio_break and not self.is_muted:
                                 self.audio_break.play()
-                        except:
+                        except Exception:
                             pass
 
                         try:
                             self.page.launch_url("vibrate:500")
-                        except:
+                        except Exception:
                             pass
 
                         try:
@@ -483,7 +485,7 @@ class FocusManager:
                                 bgcolor=ft.Colors.GREEN_700,
                             )
                             self.page.snack_bar.open = True
-                        except:
+                        except Exception:
                             pass
                         self.page.update()
                     else:
@@ -503,7 +505,7 @@ class FocusManager:
                                 bgcolor=ft.Colors.BLUE_700,
                             )
                             self.page.snack_bar.open = True
-                        except:
+                        except Exception:
                             pass
                         self.page.update()
                         break
@@ -524,14 +526,13 @@ class FocusManager:
             except:
                 pass
 
-    def apply_penalty(self):
+    async def apply_penalty(self):
         """KỶ LUẬT SẮT: Penalty when window loses focus during work."""
         self.running = False
         self.play_btn.icon = ft.Icons.PLAY_ARROW
+        import asyncio
 
-        # Deduct 50 XP (min 0)
-        self.current_xp, self.current_level = db.deduct_xp(50)
-
+        self.current_xp, self.current_level = await asyncio.to_thread(db.deduct_xp, 50)
         # Change emoji to dead plant
         self.overlay_emoji.value = "🥀"
         self.main_emoji.value = "🥀"
@@ -620,6 +621,31 @@ class FocusManager:
             self.page.update()
         except Exception as e:
             print(f"Reload sounds error: {e}")
+
+    def sync_xp(self):
+        """Fetch latest XP and Level from DB and update the Focus UI."""
+        try:
+            current_xp, current_level = db.get_xp_level()
+            xp_needed = current_level * 500
+            emoji = db.get_species_emoji(current_level)
+
+            self.tree_xp_bar.value = (
+                min(1.0, current_xp / xp_needed) if xp_needed > 0 else 0
+            )
+            self.level_text.value = f"Level {current_level}"
+            self.xp_text.value = f"{current_xp}/{xp_needed} XP"
+            self.tree_emoji_text.value = emoji
+            self.main_emoji.value = emoji
+            self.overlay_emoji.value = emoji
+
+            self.tree_xp_bar.update()
+            self.level_text.update()
+            self.xp_text.update()
+            self.tree_emoji_text.update()
+            self.main_emoji.update()
+            self.overlay_emoji.update()
+        except:
+            pass
 
 
 def _seed_dummy_icpc_tree():
@@ -717,8 +743,14 @@ def _seed_dummy_icpc_tree():
 
 def main(page: ft.Page):
     page.title = "Studygram"
-    page.window.width = 390
-    page.window.height = 844
+    if page.platform not in [
+        ft.PagePlatform.ANDROID,
+        ft.PagePlatform.IOS,
+        "android",
+        "ios",
+    ]:
+        page.window.width = 390
+        page.window.height = 844
 
     import csv
     import os
@@ -828,11 +860,17 @@ def main(page: ft.Page):
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.PURPLE, use_material3=True)
     page.bgcolor = "#F8F9FA" if settings["theme"] == "light" else "#121212"
     page.padding = 15
-    page.window_full_screen = False
+    if page.platform not in [
+        ft.PagePlatform.ANDROID,
+        ft.PagePlatform.IOS,
+        "android",
+        "ios",
+    ]:
+        page.window_full_screen = False
 
     def on_window_event(e):
         if e.data == "blur" and focus_manager.running and focus_manager.mode == "work":
-            focus_manager.apply_penalty()
+            page.run_task(focus_manager.apply_penalty)
 
     page.on_window_event = on_window_event
 
@@ -947,32 +985,100 @@ def main(page: ft.Page):
             content_container.controls.clear()
             content_container.scroll = "auto"
 
-            import importlib
-
-            importlib.reload(db)
-
-            # --- 🔮 RPG SKILL TREE UI ---
-            tree = db.get_skill_tree_by_name("Python ICPC")
+            trees = db.get_all_skill_trees()
+            tree = trees[0] if trees else None
             if not tree:
                 _seed_dummy_icpc_tree()
-                tree = db.get_skill_tree_by_name("Python ICPC")
+                trees = db.get_all_skill_trees()
+                tree = trees[0] if trees else None
 
             nodes = db.get_tree_nodes(tree["id"]) if tree else []
-            global_sp = db.get_global_sp()
+
+            _nodes_fixed = []
+            for n in nodes:
+                n_dict = dict(n)
+                # Nếu nhánh đang bị khóa, kiểm tra xem nó đã đủ điều kiện mở chưa
+                if n_dict["status"] == "locked":
+                    can_unlock, _ = db.check_node_unlockability(n_dict["id"])
+                    if can_unlock:
+                        n_dict["status"] = "unlocked"  # Đổi sang màu tím để nhận exp
+                _nodes_fixed.append(n_dict)
+            nodes = _nodes_fixed
 
             is_builder = page.session.store.get("builder_mode") or False
 
+            # --- CODE GIAO DIỆN BÚT CHÌ ĐỔI TÊN CÂY ---
+            current_tree_name = tree["name"] if tree else "Chưa có tên"
+
+            def save_tree_name(e):
+                new_name = edit_name_field.value
+                if new_name.strip() and tree:
+                    db.update_skill_tree(tree["id"], new_name.strip())
+                    rename_dialog.open = False
+                    render_quests()  # Vẽ lại trang để cập nhật tên mới
+                    page.update()
+
+            edit_name_field = ft.TextField(
+                label="Đổi tên lộ trình cày cuốc:", value=current_tree_name
+            )
+            rename_dialog = ft.AlertDialog(
+                title=ft.Text("Đổi tên Phó Bản"),
+                content=edit_name_field,
+                actions=[
+                    ft.TextButton(
+                        "Hủy",
+                        on_click=lambda e: (
+                            setattr(rename_dialog, "open", False),
+                            page.update(),
+                        ),
+                    ),
+                    ft.ElevatedButton(
+                        "Lưu thay đổi",
+                        on_click=save_tree_name,
+                        bgcolor=ft.Colors.PURPLE_700,
+                        color=ft.Colors.WHITE,
+                    ),
+                ],
+                on_dismiss=lambda e: (
+                    (page.overlay.remove(rename_dialog), page.update())
+                    if rename_dialog in page.overlay
+                    else None
+                ),
+            )
+
+            tree_title = ft.Text(
+                current_tree_name,
+                size=24,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.WHITE,
+            )
+
+            edit_btn = ft.IconButton(
+                icon=ft.Icons.EDIT_ROUNDED,
+                icon_color=ft.Colors.GREY_400,
+                tooltip="Đổi tên phó bản",
+                on_click=lambda e: (
+                    page.overlay.append(rename_dialog),
+                    setattr(rename_dialog, "open", True),
+                    page.update(),
+                ),
+            )
+
+            # Cụm tiêu đề gồm Tên Cây + Nút Bút Chì
+            title_group = ft.Row(
+                [tree_title, edit_btn], alignment=ft.MainAxisAlignment.START
+            )
+
+            # Khung chứa Tiêu đề
             header_row = ft.Row(
                 [
                     ft.Text(
-                        f"Điểm Kỹ Năng (SP): {global_sp} \U0001f52e",
-                        size=18,
-                        weight="bold",
-                        color=ft.Colors.PURPLE_ACCENT,
-                    )
+                        "Skill Tree", size=26, weight="bold", color=ft.Colors.WHITE
+                    ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             )
+            # --- KẾT THÚC ĐOẠN DÁN ---
 
             if is_builder:
 
@@ -1037,13 +1143,18 @@ def main(page: ft.Page):
                         label="Mô tả", value=node_data["description"]
                     )
                     sp_field = ft.TextField(
-                        label="SP Yêu cầu",
+                        label="Thưởng EXP (mỗi mốc)",
                         value=str(node_data["sp_cost"]),
                         keyboard_type=ft.KeyboardType.NUMBER,
                     )
                     repeat_switch = ft.Switch(
                         label="Cho phép cày lặp lại (Farm SP)",
                         value=bool(node_data["is_repeatable"]),
+                    )
+                    max_level_field = ft.TextField(
+                        label="Số Cấp Độ (Max Level)",
+                        value=str(node_data.get("max_level", 1)),
+                        keyboard_type=ft.KeyboardType.NUMBER,
                     )
 
                     def on_save(e_save):
@@ -1053,6 +1164,7 @@ def main(page: ft.Page):
                             desc_field.value,
                             int(sp_field.value or 0),
                             repeat_switch.value,
+                            int(max_level_field.value or 1),
                         )
                         dialog.open = False
                         render_quests()
@@ -1113,7 +1225,13 @@ def main(page: ft.Page):
                     dialog = ft.AlertDialog(
                         title=ft.Text("Chỉnh Sửa (Builder)"),
                         content=ft.Column(
-                            [name_field, desc_field, sp_field, repeat_switch],
+                            [
+                                name_field,
+                                desc_field,
+                                sp_field,
+                                repeat_switch,
+                                max_level_field,
+                            ],
                             tight=True,
                         ),
                         actions=[
@@ -1141,27 +1259,51 @@ def main(page: ft.Page):
                     return
 
                 if node_data["status"] == "locked":
+                    # Lấy lý do bị khóa từ Database (do chưa cày xong nhánh trên)
+                    can_unlock, reason = db.check_node_unlockability(node_data["id"])
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text(
+                            f"🔒 CHƯA THỂ MỞ KHÓA: {reason}",
+                            color=ft.Colors.WHITE,
+                            weight="bold",
+                        ),
+                        bgcolor=ft.Colors.RED_800,
+                    )
+                    page.snack_bar.open = True
+                    page.update()
                     return
+
+                # NẾU NHÁNH ĐÃ MAX CẤP VÀ KHÔNG CHO CÀY LẠI -> Bật thông báo màu CAM
                 if node_data["status"] == "mastered" and not node_data["is_repeatable"]:
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text(
+                            "✅ Kỹ năng này đã đạt cấp tối đa, không thể cày thêm!",
+                            color=ft.Colors.WHITE,
+                        ),
+                        bgcolor=ft.Colors.ORANGE_800,
+                    )
+                    page.snack_bar.open = True
+                    page.update()
                     return
 
                 def on_verify_click(e2):
-                    success, msg, new_status = db.invest_sp(node_data["id"])
-                    if not success and "đủ SP" not in msg:
-                        db.master_node(node_data["id"])
-                        msg = f"Đã hoàn thành: {node_data['name']}"
+                    success, msg, new_status = db.complete_node_milestone(
+                        node_data["id"]
+                    )
 
                     bs.open = False
                     page.snack_bar = ft.SnackBar(
-                        ft.Text(msg), bgcolor=ft.Colors.GREEN_700
+                        ft.Text(msg),
+                        bgcolor=ft.Colors.GREEN_700 if success else ft.Colors.RED_700,
                     )
                     page.snack_bar.open = True
                     page.update()
                     render_quests()
+                    focus_manager.sync_xp()
                     page.update()
 
                 bs = ft.BottomSheet(
-                    ft.Container(
+                    content=ft.Container(
                         padding=20,
                         content=ft.Column(
                             [
@@ -1176,20 +1318,25 @@ def main(page: ft.Page):
                                     color=ft.Colors.GREY_300,
                                 ),
                                 ft.Text(
-                                    f"SP yêu cầu: {node_data['sp_cost']}",
-                                    color=ft.Colors.PURPLE_ACCENT,
+                                    f"Thưởng: {node_data['sp_cost']} EXP 🌟",
+                                    color=ft.Colors.GREEN_400,
                                 ),
                                 ft.ElevatedButton(
-                                    "Xác minh & Nhận SP",
+                                    "Hoàn Thành Mốc & Nhận EXP",
                                     on_click=on_verify_click,
-                                    bgcolor=ft.Colors.PURPLE_700,
+                                    bgcolor=ft.Colors.GREEN_700,
                                     color=ft.Colors.WHITE,
                                 ),
                             ],
                             tight=True,
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
-                    )
+                    ),
+                    on_dismiss=lambda e: (
+                        (page.overlay.remove(e.control), page.update())
+                        if e.control in page.overlay
+                        else None
+                    ),
                 )
                 page.overlay.append(bs)
                 bs.open = True
@@ -1226,18 +1373,49 @@ def main(page: ft.Page):
                     icon_color = ft.Colors.WHITE
                     glow = ft.Colors.with_opacity(0.6, ft.Colors.PURPLE_ACCENT_700)
 
-                progress = (
-                    node["current_sp_invested"] / node["sp_cost"]
-                    if node["sp_cost"] > 0
-                    else 0
-                )
-                if state == "mastered":
-                    progress = 1.0
+                max_lvl = node.get("max_level", 1)
+                cur_lvl = node.get("current_level", 0)
+
+                # Build segmented progress bars (binary: 1.0 = done, 0.0 = not done)
+                if state != "locked" and max_lvl > 1:
+                    bar_spacing = 2
+                    total_width = 120
+                    bar_width = (total_width - (max_lvl - 1) * bar_spacing) / max_lvl
+                    seg_bars = []
+                    for i in range(max_lvl):
+                        val = 1.0 if i < cur_lvl else 0.0
+                        seg_bars.append(
+                            ft.ProgressBar(
+                                value=val,
+                                color=ft.Colors.GREEN_400,
+                                bgcolor=ft.Colors.GREY_900,
+                                width=bar_width,
+                                height=6,
+                                border_radius=3,
+                            )
+                        )
+                    progress_widget = ft.Row(seg_bars, spacing=bar_spacing)
+                elif state != "locked":
+                    single_val = (
+                        1.0 if state == "mastered" else (1.0 if cur_lvl > 0 else 0.0)
+                    )
+                    progress_widget = ft.ProgressBar(
+                        value=single_val,
+                        color=ft.Colors.GREEN_400,
+                        bgcolor=ft.Colors.GREY_900,
+                        width=120,
+                        height=6,
+                        border_radius=3,
+                    )
+                else:
+                    progress_widget = ft.Container(height=6)
+
+                level_suffix = f"\n(Lv.{cur_lvl}/{max_lvl})" if max_lvl > 1 else ""
 
                 node_container = ft.Container(
                     data=node,
                     on_click=handle_node_click
-                    if (state != "locked" or is_builder)
+                    if (is_builder or state != "mastered" or node["is_repeatable"])
                     else None,
                     content=ft.Column(
                         [
@@ -1255,22 +1433,13 @@ def main(page: ft.Page):
                                 else None,
                             ),
                             ft.Text(
-                                node["name"],
+                                node["name"] + level_suffix,
                                 size=14,
                                 weight="bold",
                                 text_align=ft.TextAlign.CENTER,
                                 color=bg if state != "locked" else ft.Colors.GREY_500,
                             ),
-                            ft.ProgressBar(
-                                value=progress,
-                                color=ft.Colors.PURPLE_ACCENT,
-                                bgcolor=ft.Colors.GREY_900,
-                                width=120,
-                                height=6,
-                                border_radius=3,
-                            )
-                            if state != "locked"
-                            else ft.Container(height=6),
+                            progress_widget,
                         ],
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         spacing=10,
@@ -1337,6 +1506,30 @@ def main(page: ft.Page):
             else:
                 skill_tree = ft.Container()
 
+            # --- ĐOẠN CODE BỊ XÓA NHẦM (DÁN NGAY TRÊN SKILL_TREE_CARD) ---
+            inner_title_row = ft.Row(
+                [
+                    ft.Text(
+                        f"\U0001f332 {tree['name'] if tree else 'Chưa có tên'} Skill Tree",
+                        size=22,
+                        weight="bold",
+                        color=ft.Colors.PURPLE_200,
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.EDIT_ROUNDED,
+                        icon_color=ft.Colors.PURPLE_200,
+                        on_click=lambda e: (
+                            page.overlay.append(rename_dialog),
+                            setattr(rename_dialog, "open", True),
+                            page.update(),
+                        ),
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+            )
+            # -------------------------------------------------------------
+
+            # --- CARD SKILL TREE CỦA ÔNG GIÁO (ĐÃ ĐƯỢC LẮP BÚT CHÌ) ---
             skill_tree_card = ft.Container(
                 bgcolor="#1E1B4B",
                 border_radius=20,
@@ -1344,12 +1537,7 @@ def main(page: ft.Page):
                 margin=ft.Margin(0, 0, 0, 20),
                 content=ft.Column(
                     [
-                        ft.Text(
-                            "\U0001f332 Python ICPC Skill Tree",
-                            size=22,
-                            weight="bold",
-                            color=ft.Colors.PURPLE_200,
-                        ),
+                        inner_title_row,  # <-- NÓ NẰM Ở ĐÂY NÀY!
                         ft.Divider(height=1, color=ft.Colors.PURPLE_900),
                         ft.Container(height=10),
                         skill_tree,
@@ -1658,14 +1846,13 @@ def main(page: ft.Page):
                             dynamic_size = 90 + (weight - 1) * 25
 
                             def open_sheet(e):
-                                def _confirm_done(e2):
+                                async def _confirm_done(e2):
                                     sheet.open = False
                                     page.update()
 
                                     db.toggle_habit_log(
                                         habit_data["id"], today_str, True
                                     )
-
                                     page.snack_bar = ft.SnackBar(
                                         ft.Text(
                                             "Đã hoàn thành thói quen!",
@@ -1679,16 +1866,16 @@ def main(page: ft.Page):
                                     widget.scale = 1.2
                                     widget.update()
 
-                                    import time
+                                    # DÙNG ASYNC SLEEP THAY VÌ TIME.SLEEP
+                                    import asyncio
 
-                                    time.sleep(0.15)
+                                    await asyncio.sleep(0.15)
 
-                                    # Step 2: Shatter (shrink and fade)
+                                    # Step 2: Shatter
                                     widget.scale = 0.1
                                     widget.opacity = 0
                                     widget.update()
-                                    time.sleep(0.2)
-
+                                    await asyncio.sleep(0.2)
                                     # Step 3: Remove and reorganize
                                     if widget in grid_row.controls:
                                         grid_row.controls.remove(widget)
@@ -1698,7 +1885,7 @@ def main(page: ft.Page):
                                     page.update()
 
                                 sheet = ft.BottomSheet(
-                                    ft.Container(
+                                    content=ft.Container(
                                         padding=20,
                                         content=ft.Column(
                                             [
@@ -1718,7 +1905,12 @@ def main(page: ft.Page):
                                             ],
                                             tight=True,
                                         ),
-                                    )
+                                    ),
+                                    on_dismiss=lambda e: (
+                                        (page.overlay.remove(e.control), page.update())
+                                        if e.control in page.overlay
+                                        else None
+                                    ),
                                 )
                                 page.overlay.append(sheet)
                                 sheet.open = True
@@ -1811,7 +2003,8 @@ def main(page: ft.Page):
             content_container.controls.append(
                 ft.Text("🎯 Ngân sách tháng này", size=20, weight=ft.FontWeight.W_600)
             )
-            progress = min(spent / budget, 1.0) if budget > 0 else 1.0
+            budget = float(settings.get("monthly_budget", 0))
+            progress = min(spent / budget, 1.0) if budget > 0 else 0.0
             color = (
                 ft.Colors.GREEN
                 if progress < 0.5
@@ -2659,6 +2852,18 @@ def main(page: ft.Page):
             )
 
             def save_settings(e):
+                try:
+                    # Ép kiểu xem có phải là số không
+                    safe_budget = float(budget_input.value or 0)
+                except ValueError:
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text("Ngân sách phải là con số!", color=ft.Colors.WHITE),
+                        bgcolor=ft.Colors.RED_700,
+                    )
+                    page.snack_bar.open = True
+                    page.update()
+                    return
+
                 db.update_settings(
                     float(budget_input.value),
                     theme_dd.value,
@@ -2786,11 +2991,6 @@ def main(page: ft.Page):
                 snd_settings.get("break_start_path", "break_start.mp3")
             )
 
-            def on_sound_dismiss(ex):
-                if sound_dialog in page.overlay:
-                    page.overlay.remove(sound_dialog)
-                page.update()
-
             def _open_sound_dialog(target_key, current_display):
                 path_input = ft.TextField(
                     label="Đường dẫn file âm thanh (.mp3, .wav)",
@@ -2842,7 +3042,11 @@ def main(page: ft.Page):
                             on_click=on_save,
                         ),
                     ],
-                    on_dismiss=on_sound_dismiss,
+                    on_dismiss=lambda ex: (
+                        (page.overlay.remove(sound_dialog), page.update())
+                        if sound_dialog in page.overlay
+                        else None
+                    ),
                 )
                 page.overlay.append(sound_dialog)
                 sound_dialog.open = True
